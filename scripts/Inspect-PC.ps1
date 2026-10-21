@@ -422,14 +422,18 @@ if ($NoUpload) {
 }
 
 # --- Copy the result back to the flash disk, if it is still plugged in ---
+# (Plain .NET path calls: Join-Path/Test-Path throw once the flash disk's
+# drive letter is gone.)
 if ($UsbRoot) {
-    if (Test-Path (Join-Path $UsbRoot 'config.json')) {
+    $usbOk = $false
+    try { $usbOk = [IO.File]::Exists([IO.Path]::Combine($UsbRoot, 'config.json')) } catch {}
+    if ($usbOk) {
         try {
-            [PSCustomObject]$record | Export-Csv -Path (Join-Path $UsbRoot 'inspection-log.csv') -Append -Force -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
-            if (Test-Path $InspectorCachePath) { Copy-Item $InspectorCachePath (Join-Path $UsbRoot 'inspector-name.txt') -Force }
-            $usbPending = Join-Path $UsbRoot 'pending-uploads.txt'
+            [PSCustomObject]$record | Export-Csv -Path ([IO.Path]::Combine($UsbRoot, 'inspection-log.csv')) -Append -Force -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+            if (Test-Path $InspectorCachePath) { Copy-Item $InspectorCachePath ([IO.Path]::Combine($UsbRoot, 'inspector-name.txt')) -Force }
+            $usbPending = [IO.Path]::Combine($UsbRoot, 'pending-uploads.txt')
             if (Test-Path $pendingPath) { Copy-Item $pendingPath $usbPending -Force }
-            else { Remove-Item $usbPending -ErrorAction SilentlyContinue }
+            elseif ([IO.File]::Exists($usbPending)) { [IO.File]::Delete($usbPending) }
             Write-Host "  Also saved to the flash disk: $UsbRoot" -ForegroundColor DarkGray
         } catch {
             Write-Host "  Could not write to the flash disk ($($_.Exception.Message)) - result kept on this PC: $LogPath" -ForegroundColor Yellow

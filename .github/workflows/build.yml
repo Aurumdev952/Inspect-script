@@ -73,6 +73,16 @@ jobs:
             if ($errors) { $errors | Format-List; throw "Syntax errors in $($f.Name)" }
             Write-Host "OK: $($f.Name)"
           }
+      - name: Bundled drivers are accepted by Windows
+        shell: powershell
+        run: |
+          $out = pnputil.exe /add-driver "flashdisk\drivers\*.inf" /subdirs
+          $out | Write-Host
+          $added = ($out | Select-String 'Added driver packages:\s*(\d+)').Matches.Groups[1].Value
+          $total = (Get-ChildItem flashdisk\drivers -Filter *.inf -Recurse).Count
+          Write-Host "Added $added of $total driver packages"
+          if ([int]$added -ne $total) { throw "Some bundled drivers were rejected" }
+          exit 0
       - name: Run the exe end-to-end (no upload)
         shell: powershell
         run: |

@@ -160,7 +160,7 @@ jobs:
 
           # A damaged driver file on the flash disk is reported (exit code 3)
           Copy-Item $usb dmg -Recurse
-          $inf = Get-Item dmg\drivers\Realtek-WiFi\netrtwlane601.inf
+          $inf = Get-Item dmg\drivers\Realtek-WiFi\rtldata601.dat   # a file next to the .inf, so the package still matches
           $bytes = [IO.File]::ReadAllBytes($inf.FullName); [IO.File]::WriteAllBytes($inf.FullName, $bytes[0..999])
           $o = powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Prepare-Local.ps1 -UsbRoot "$PWD\dmg" -LocalDir "$PWD\prep-dmg" -HardwareIds 'PCI\VEN_10EC&DEV_B852' | Out-String
           Write-Host $o

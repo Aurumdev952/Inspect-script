@@ -37,15 +37,16 @@ function Get-WifiAdapter {
 }
 
 function Get-ProblemNetworkDevices {
-    # Devices Windows found but could not start. Error 28 = "drivers for
-    # this device are not installed" - that is how a Wi-Fi/Ethernet card
-    # with no driver looks (it shows under "Other devices" in Device
-    # Manager, so it has no 'Net' class yet).
+    # Network devices Windows found but could not start. Error 28 = "drivers
+    # for this device are not installed" - a Wi-Fi card with no driver shows
+    # under "Other devices" as "Network Controller" with no 'Net' class yet.
+    # PCI class code 02xx (CompatibleID "PCI\CC_02...") = network controller.
+    # Other driverless devices (chipset, SM Bus, ...) are NOT counted.
     try {
         return Get-CimInstance Win32_PnPEntity -ErrorAction Stop | Where-Object {
             $_.ConfigManagerErrorCode -ne 0 -and (
                 $_.PNPClass -eq 'Net' -or
-                ($_.ConfigManagerErrorCode -eq 28 -and $_.PNPDeviceID -match '^(PCI|USB|SDIO)\\') -or
+                (@($_.CompatibleID) -match '^PCI\\CC_02').Count -gt 0 -or
                 $_.Name -match 'Network|Wi-?Fi|Wireless|WLAN|Ethernet|802\.11'
             )
         }
@@ -54,11 +55,37 @@ function Get-ProblemNetworkDevices {
     }
 }
 
+function Test-DriverFiles {
+    # drivers\checksums.sha256 (made at build time) lists every bundled
+    # driver file. A file that doesn't match was damaged while copying to
+    # the flash disk (e.g. unplugged before the copy finished).
+    param([string]$Folder)
+
+    $list = Join-Path $Folder 'checksums.sha256'
+    if (-not (Test-Path $list)) { return }
+    $bad = @()
+    foreach ($line in Get-Content $list) {
+        if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+)$') { continue }
+        $file = Join-Path $Folder ($Matches[2] -replace '/', '\')
+        if (-not (Test-Path $file)) { $bad += "$($Matches[2]) (missing)"; continue }
+        if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $Matches[1].ToUpper()) { $bad += $Matches[2] }
+    }
+    if ($bad.Count) {
+        Write-Host "    $($bad.Count) driver file(s) are DAMAGED on the flash disk:" -ForegroundColor Red
+        $bad | Select-Object -First 5 | ForEach-Object { Write-Host "      $_" -ForegroundColor Red }
+        Write-Host "    Fix: copy the PC-Inspection folder to the flash disk again and use" -ForegroundColor Yellow
+        Write-Host "    'Eject' before unplugging. (Linux: run 'sync' first.)" -ForegroundColor Yellow
+    } else {
+        Write-Host "    Driver files checked: OK" -ForegroundColor DarkGray
+    }
+}
+
 function Install-InfFolder {
     param([string]$Folder)
 
     $infs = Get-ChildItem -Path $Folder -Filter *.inf -Recurse -ErrorAction SilentlyContinue
     if (-not $infs) { return $false }
+    Test-DriverFiles $Folder
     Write-Host "    Installing $($infs.Count) driver(s) from $Folder (can take a few minutes) ..." -ForegroundColor DarkGray
     $out = & pnputil.exe /add-driver (Join-Path $Folder '*.inf') /subdirs /install 2>&1
     # pnputil's last lines are a summary: "Total driver packages: N",

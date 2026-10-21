@@ -56,6 +56,9 @@ jobs:
         run: |
           cp -r flashdisk/. dist/
           python3 build/make-bat.py "${{ steps.ver.outputs.version }}" dist/PC-Inspection.bat
+          # Checksums so the tool can tell when driver files got damaged while
+          # being copied to a flash disk
+          (cd dist/drivers && find . -type f ! -name README.txt ! -name checksums.sha256 -printf '%P\n' | sort | xargs -d '\n' sha256sum > checksums.sha256 && wc -l checksums.sha256)
           # Everything inside ONE folder, so the whole thing is one copy to the flash disk
           mkdir -p pkg/PC-Inspection && cp -r dist/. pkg/PC-Inspection/
           cd pkg && zip -r ../PC-Inspection-${{ steps.ver.outputs.version }}.zip PC-Inspection
@@ -112,12 +115,33 @@ jobs:
           if ($top.Count -ne 1 -or $top[0].Name -ne 'PC-Inspection') { throw "zip must contain exactly one folder 'PC-Inspection'" }
           Get-ChildItem flash\PC-Inspection | Format-Table Name, Length
           $usb = 'flash\PC-Inspection'
+          $n = 0
+          foreach ($line in Get-Content "$usb\drivers\checksums.sha256") {
+            $hash, $rel = $line -split '\s+', 2
+            if ((Get-FileHash (Join-Path "$usb\drivers" $rel)).Hash -ne $hash.ToUpper()) { throw "Checksum mismatch: $rel" }
+            $n++
+          }
+          Write-Host "Driver checksums OK ($n files)"
           $p = Start-Process "$usb\PC-Inspection.exe" -ArgumentList '--no-pause','-Inspector','CI-Test','-NoUpload' -NoNewWindow -Wait -PassThru
           Write-Host "Exit code: $($p.ExitCode)"
           # 0 = PASS, 2 = FAIL (expected on a CI VM: no Wi-Fi, not 14th-gen i5)
           if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 2) { throw "Inspection crashed (exit $($p.ExitCode))" }
           if (-not (Test-Path "$usb\inspection-log.csv")) { throw "inspection-log.csv was not written" }
           Get-Content "$usb\inspection-log.csv"
+      - name: Damaged driver files are detected
+        shell: powershell
+        run: |
+          Copy-Item flash\PC-Inspection\drivers broken -Recurse
+          $inf = Get-ChildItem broken -Recurse -Filter *.inf | Where-Object Length -gt 100000 | Select-Object -First 1
+          $bytes = [IO.File]::ReadAllBytes($inf.FullName); [IO.File]::WriteAllBytes($inf.FullName, $bytes[0..999])
+          . .\scripts\Setup-Network.ps1
+          $out = (Test-DriverFiles (Resolve-Path broken).Path 6>&1 | Out-String)
+          Write-Host $out
+          if ($out -notmatch 'DAMAGED') { throw "Damaged file was not reported" }
+          $ok = (Test-DriverFiles (Resolve-Path flash\PC-Inspection\drivers).Path 6>&1 | Out-String)
+          if ($ok -notmatch 'checked: OK') { throw "Good files were not reported OK" }
+          Write-Host "Problem-device filter on this VM:"
+          Get-ProblemNetworkDevices | Format-Table Name, PNPDeviceID
       - name: Run the .bat end-to-end (no upload)
         shell: powershell
         run: |

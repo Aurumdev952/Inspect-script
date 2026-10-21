@@ -25,5 +25,11 @@ WHY IT DOES NOT START BY ITSELF WHEN I PLUG THE FLASH DISK:
   is how USB viruses used to spread. autorun.inf only gives the drive a
   name and icon. You must double-click PC-Inspection.exe.
 
+IF PC-Inspection.exe SHOWS 0 KB OR DISAPPEARS:
+  Windows Defender removed it by mistake (false alarm - the exe is not
+  code-signed). Open Windows Security -> Virus & threat protection ->
+  Protection history -> pick the item -> Actions -> Allow / Restore.
+  Or use the backup: double-click Run-Inspection.bat (does the same thing).
+
 IF WINDOWS SAYS "Windows protected your PC":
   Click "More info" -> "Run anyway". (The exe is not code-signed.)

@@ -4,3 +4,4 @@ inspector-name.txt
 dist/
 *.exe
 pending-uploads.txt
+*.syso

@@ -8,6 +8,10 @@
 
 var SHEET_NAME = 'Inspections';
 
+// Optional: write to a specific tab instead of SHEET_NAME. Use the number
+// after "gid=" in the Sheet's URL (e.g. ...edit#gid=418189154 -> 418189154).
+var SHEET_GID = null;
+
 var COLUMNS = [
   'timestamp', 'inspector', 'serialNumber', 'hostname', 'os', 'osBuild',
   'activationStatus', 'cpuModel', 'cpuSpecStatus', 'ramGB', 'ramSpecStatus',
@@ -25,10 +29,7 @@ var HEADER_ROW = [
 ];
 
 function doPost(e) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-  if (!sheet) {
-    sheet = SpreadsheetApp.getActiveSpreadsheet().insertSheet(SHEET_NAME);
-  }
+  var sheet = getTargetSheet_();
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(HEADER_ROW);
   } else if (sheet.getLastColumn() < HEADER_ROW.length) {
@@ -56,6 +57,17 @@ function doPost(e) {
   return ContentService
     .createTextOutput(JSON.stringify({ status: 'ok' }))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+function getTargetSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (SHEET_GID !== null) {
+    var tabs = ss.getSheets();
+    for (var i = 0; i < tabs.length; i++) {
+      if (tabs[i].getSheetId() === Number(SHEET_GID)) return tabs[i];
+    }
+  }
+  return ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);
 }
 
 // Returns {row, timestamp, inspector} for the first existing row with this

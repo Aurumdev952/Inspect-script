@@ -52,17 +52,42 @@ Write-Host "==============================================" -ForegroundColor Cya
 Write-Host "            PC INSPECTION" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
 
-# --- Who is inspecting? Remembered on the flash disk; Enter keeps it. ---
+# --- Who is inspecting? Pick from the "Inspectors" list in config.json
+# (or type a name). The last one used is remembered; Enter keeps it. ---
 if (-not $Inspector) {
     $lastInspector = ''
     if (Test-Path $InspectorCachePath) {
         $lastInspector = (Get-Content $InspectorCachePath -Raw).Trim()
     }
+    $names = @($config.Inspectors | Where-Object { $_ -and "$_".Trim() } | ForEach-Object { "$_".Trim() })
+
     while (-not $Inspector) {
-        $prompt = if ($lastInspector) { "Inspector name [Enter = $lastInspector]" } else { 'Enter your name (inspector)' }
-        $typed = (Read-Host $prompt).Trim()
-        $Inspector = if ($typed) { $typed } else { $lastInspector }
+        if ($names.Count -gt 0) {
+            Write-Host "`nWho is inspecting?" -ForegroundColor Cyan
+            for ($i = 0; $i -lt $names.Count; $i++) {
+                $mark = if ($names[$i] -eq $lastInspector) { '  <- last used' } else { '' }
+                Write-Host ("  {0,2}) {1}{2}" -f ($i + 1), $names[$i], $mark)
+            }
+            Write-Host "   0) Someone else (type name)"
+            $prompt = if ($lastInspector) { "Number [Enter = $lastInspector]" } else { 'Number' }
+            $typed = (Read-Host $prompt).Trim()
+            $num = 0
+            if (-not $typed) {
+                $Inspector = $lastInspector
+            } elseif ([int]::TryParse($typed, [ref]$num)) {
+                if ($num -ge 1 -and $num -le $names.Count) { $Inspector = $names[$num - 1] }
+                elseif ($num -eq 0) { $Inspector = (Read-Host 'Type your name').Trim() }
+                else { Write-Host "  Pick a number from the list." -ForegroundColor Yellow }
+            } else {
+                $Inspector = $typed   # typed a name directly
+            }
+        } else {
+            $prompt = if ($lastInspector) { "Inspector name [Enter = $lastInspector]" } else { 'Enter your name (inspector)' }
+            $typed = (Read-Host $prompt).Trim()
+            $Inspector = if ($typed) { $typed } else { $lastInspector }
+        }
     }
+    Write-Host "  Inspector: $Inspector" -ForegroundColor Green
     if ($Inspector -ne $lastInspector) {
         try { $Inspector | Out-File -FilePath $InspectorCachePath -Encoding UTF8 -NoNewline } catch {}
     }
@@ -345,22 +370,50 @@ try {
 }
 
 # --- Upload to Google Sheet ---
+# Rows that could not be uploaded (no internet) wait in pending-uploads.txt
+# on the flash disk, one JSON row per line, and are sent automatically the
+# next time any PC is online.
+$pendingPath = Join-Path $FlashRoot 'pending-uploads.txt'
+
+function Send-InspectionRow {
+    # Returns 'ok', 'duplicate:<message>' or throws on network/server error.
+    param([string]$Json)
+    $response = Invoke-RestMethod -Uri $WebhookUrl -Method Post -TimeoutSec 30 `
+        -Body ([Text.Encoding]::UTF8.GetBytes($Json)) -ContentType 'application/json; charset=utf-8'
+    if ($response.status -eq 'duplicate') { return "duplicate:$($response.message)" }
+    return 'ok'
+}
+
 Write-Host "`n[3/3] Saving result" -ForegroundColor Cyan
 if ($NoUpload) {
     Write-Host "  Upload skipped (-NoUpload).`n" -ForegroundColor DarkGray
 } elseif (-not $WebhookUrl) {
     Write-Host "  No WebhookUrl in config.json - result only saved to $LogPath`n" -ForegroundColor Yellow
 } else {
+    # 1) Older rows waiting from offline PCs
+    if (Test-Path $pendingPath) {
+        $stillPending = @()
+        $sent = 0
+        foreach ($line in (Get-Content $pendingPath -Encoding UTF8 | Where-Object { $_.Trim() })) {
+            try { Send-InspectionRow $line | Out-Null; $sent++ } catch { $stillPending += $line }
+        }
+        if ($stillPending.Count) { $stillPending | Set-Content $pendingPath -Encoding UTF8 }
+        else { Remove-Item $pendingPath -ErrorAction SilentlyContinue }
+        if ($sent) { Write-Host "  Sent $sent saved result(s) from earlier offline PCs." -ForegroundColor Green }
+    }
+
+    # 2) This PC
+    $json = $record | ConvertTo-Json -Depth 3 -Compress
     try {
-        $json = $record | ConvertTo-Json -Depth 3
-        $response = Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body ([Text.Encoding]::UTF8.GetBytes($json)) -ContentType 'application/json; charset=utf-8'
-        if ($response.status -eq 'duplicate') {
-            Write-Host "  NOT SAVED: $($response.message)`n" -ForegroundColor Red
+        $status = Send-InspectionRow $json
+        if ($status -like 'duplicate:*') {
+            Write-Host "  NOT SAVED: $($status.Substring(10))`n" -ForegroundColor Red
         } else {
             Write-Host "  Uploaded to Google Sheet.`n" -ForegroundColor Green
         }
     } catch {
-        Write-Warning "  Upload FAILED (row is still safe in $LogPath - copy it into the Sheet later). Error: $($_.Exception.Message)"
+        try { Add-Content -Path $pendingPath -Value $json -Encoding UTF8 } catch {}
+        Write-Warning "  Upload FAILED - saved on the flash disk, it will upload automatically the next time a PC is online. Error: $($_.Exception.Message)"
         Write-Host ""
     }
 }

@@ -3,3 +3,4 @@ inspector-name.txt
 *.zip
 dist/
 *.exe
+pending-uploads.txt

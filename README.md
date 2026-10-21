@@ -21,6 +21,7 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
 | Field | What to put |
 |---|---|
 | `WebhookUrl` | Google Apps Script web-app URL (from `AppsScript/Code.gs`) |
+| `Inspectors` | List of inspector names shown as a numbered menu, e.g. `["Hugues", "Vanessa"]`. Empty = type the name. |
 | `WifiNetworks` | List of `{ "Ssid", "Password", "Security" }`. Security: `WPA2PSK` (default), `WPA3SAE`, `WPAPSK`, `OPEN`. Add `"Hidden": true` for hidden networks. Tried in order. |
 | `DriverPackages` | Network driver links: `Name`, `Url`, `Type` (`zip`, `exe`, `msi`, `inf`, `cab`), optional `SilentArgs` (for `exe`), optional `MatchHardwareIds` (e.g. `VEN_8086` Intel, `VEN_10EC` Realtek, `VEN_14C3` MediaTek, `VEN_17CB` Qualcomm) |
 | `RequireWifi` | `true` = PC fails if it has no working Wi-Fi card/driver |
@@ -38,12 +39,25 @@ Not possible on stock Windows 7/10/11: Windows blocks AutoRun from USB flash
 disks (it was the main way USB viruses spread). `autorun.inf` only sets the
 drive's name and icon. The inspector double-clicks `PC-Inspection.exe`.
 
-## Google Sheet
+## Google Sheet (automatic upload)
 
-`AppsScript/Code.gs` now has 5 more columns (Wi-Fi adapter, driver version,
-driver status, Wi-Fi connected, internet OK). Paste it into the Sheet's Apps
-Script and **deploy a new version** to record them. The old deployment still
-works; it just ignores the new fields.
+One-time setup, done by the Sheet owner:
+
+1. Open the Google Sheet → **Extensions → Apps Script**.
+2. Paste all of `AppsScript/Code.gs` (replace what is there).
+3. To write to a specific tab, set `SHEET_GID` to the number after `gid=`
+   in the Sheet URL. Leave it `null` to use a tab named `Inspections`.
+4. **Deploy → New deployment → Web app**, Execute as **Me**, Who has access
+   **Anyone**. Copy the URL.
+5. Put that URL in `WebhookUrl` in `config.json` on the flash disk.
+
+After that every PC uploads its row by itself. If a PC has no internet, the
+row waits in `pending-uploads.txt` on the flash disk and is sent
+automatically by the next PC that is online. The same serial number is
+never saved twice.
+
+After changing `Code.gs`, use **Deploy → Manage deployments → Edit → New
+version** so the URL stays the same.
 
 ## Build / release
 

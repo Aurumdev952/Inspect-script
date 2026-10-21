@@ -1,6 +1,8 @@
 {
   "WebhookUrl": "",
 
+  "Inspectors": [],
+
   "WifiNetworks": [
     { "Ssid": "YOUR-WIFI-NAME", "Password": "YOUR-WIFI-PASSWORD", "Security": "WPA2PSK" }
   ],

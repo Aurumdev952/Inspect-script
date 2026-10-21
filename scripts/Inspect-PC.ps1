@@ -18,6 +18,9 @@
 
 param(
     [string]$FlashRoot    = $PSScriptRoot,
+    # Set by the launcher when it copied itself from the flash disk to this
+    # PC: the flash disk folder, so results can be copied back at the end.
+    [string]$UsbRoot,
     [string]$WebhookUrl,
     [string]$Inspector,
     [string]$ConfigPath,
@@ -415,6 +418,24 @@ if ($NoUpload) {
         try { Add-Content -Path $pendingPath -Value $json -Encoding UTF8 } catch {}
         Write-Warning "  Upload FAILED - saved on the flash disk, it will upload automatically the next time a PC is online. Error: $($_.Exception.Message)"
         Write-Host ""
+    }
+}
+
+# --- Copy the result back to the flash disk, if it is still plugged in ---
+if ($UsbRoot) {
+    if (Test-Path (Join-Path $UsbRoot 'config.json')) {
+        try {
+            [PSCustomObject]$record | Export-Csv -Path (Join-Path $UsbRoot 'inspection-log.csv') -Append -Force -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+            if (Test-Path $InspectorCachePath) { Copy-Item $InspectorCachePath (Join-Path $UsbRoot 'inspector-name.txt') -Force }
+            $usbPending = Join-Path $UsbRoot 'pending-uploads.txt'
+            if (Test-Path $pendingPath) { Copy-Item $pendingPath $usbPending -Force }
+            else { Remove-Item $usbPending -ErrorAction SilentlyContinue }
+            Write-Host "  Also saved to the flash disk: $UsbRoot" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "  Could not write to the flash disk ($($_.Exception.Message)) - result kept on this PC: $LogPath" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  Flash disk removed - result kept on this PC: $LogPath" -ForegroundColor DarkGray
     }
 }
 

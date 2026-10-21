@@ -122,12 +122,19 @@ jobs:
             $n++
           }
           Write-Host "Driver checksums OK ($n files)"
-          $p = Start-Process "$usb\PC-Inspection.exe" -ArgumentList '--no-pause','-Inspector','CI-Test','-NoUpload' -NoNewWindow -Wait -PassThru
+          $p = Start-Process "$usb\PC-Inspection.exe" -ArgumentList '--no-pause','--wait','-Inspector','CI-Test','-NoUpload' -NoNewWindow -Wait -PassThru
           Write-Host "Exit code: $($p.ExitCode)"
           # 0 = PASS, 2 = FAIL (expected on a CI VM: no Wi-Fi, not 14th-gen i5)
           if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 2) { throw "Inspection crashed (exit $($p.ExitCode))" }
           if (-not (Test-Path "$usb\inspection-log.csv")) { throw "inspection-log.csv was not written" }
           Get-Content "$usb\inspection-log.csv"
+          # It must have copied itself + drivers to this PC and run from there
+          $local = "$env:ProgramData\PC-Inspection"
+          foreach ($f in 'PC-Inspection.exe','config.json','drivers\checksums.sha256') {
+            if (-not (Test-Path "$local\$f")) { throw "Not copied to this PC: $f" }
+          }
+          if (-not (Test-Path "$local\inspection-log.csv")) { throw "Local copy did not run (no log on this PC)" }
+          Write-Host "Ran from local copy: OK"
       - name: Damaged driver files are detected
         shell: powershell
         run: |
@@ -142,6 +149,13 @@ jobs:
           if ($ok -notmatch 'checked: OK') { throw "Good files were not reported OK" }
           Write-Host "Problem-device filter on this VM:"
           Get-ProblemNetworkDevices | Format-Table Name, PNPDeviceID
+      - name: Finishes when the flash disk was removed
+        shell: powershell
+        run: |
+          $out = powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Inspect-PC.ps1 -FlashRoot "$env:ProgramData\PC-Inspection" -UsbRoot 'Z:\gone\PC-Inspection' -Inspector CI-Removed -SkipNetwork -NoUpload 6>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch 'Flash disk removed') { throw "Did not handle a removed flash disk" }
+          exit 0
       - name: Run the .bat end-to-end (no upload)
         shell: powershell
         run: |
@@ -159,7 +173,7 @@ jobs:
           New-Item -ItemType Directory -Force menu | Out-Null
           Copy-Item dist\PC-Inspection.exe menu\
           '{ "Inspectors": ["Alice Test", "Bob Test"], "RequireWifi": false }' | Set-Content menu\config.json
-          cmd /c "echo 2| menu\PC-Inspection.exe --no-pause -NoUpload -SkipNetwork"
+          cmd /c "echo 2| menu\PC-Inspection.exe --no-pause --wait -NoUpload -SkipNetwork"
           $row = Import-Csv menu\inspection-log.csv | Select-Object -Last 1
           Write-Host "Inspector recorded: $($row.inspector)"
           if ($row.inspector -ne 'Bob Test') { throw "Menu did not record 'Bob Test'" }

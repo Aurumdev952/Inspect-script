@@ -14,13 +14,16 @@ ON EACH PC:
   1. Plug in the flash disk and open the PC-Inspection folder.
   2. Double-click PC-Inspection.exe  (click "Yes" on the admin prompt)
      (or PC-Inspection.bat - same thing, use it if the exe is blocked)
-  3. Type your name the first time (press Enter next time to reuse it).
-  4. Wait for the PASS / FAIL result, then press Enter to close.
+  3. When it says "You can REMOVE THE FLASH DISK now", pick your name
+     from the list (Enter = last used), then take the flash disk out and
+     go to the next PC - this PC keeps going on its own.
+  4. Come back later for the PASS / FAIL result, then press Enter.
 
   The tool: installs missing network drivers, adds the Wi-Fi and connects,
   checks CPU / RAM / disk / Windows activation, then uploads the result.
-  If there is no internet, the result is still saved to
-  inspection-log.csv on the flash disk.
+  Results: uploaded to the Google Sheet, saved on the PC in
+  C:\ProgramData\PC-Inspection\inspection-log.csv, and copied to the
+  flash disk too if it is still plugged in at the end.
 
 WHY IT DOES NOT START BY ITSELF WHEN I PLUG THE FLASH DISK:
   Windows (7, 10, 11) blocks auto-run from USB flash disks on purpose - it

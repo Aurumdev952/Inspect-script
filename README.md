@@ -27,8 +27,9 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
 | `RequireWifi` | `true` = PC fails if it has no working Wi-Fi card/driver |
 | `CacheDriversWhenOnline` | `true` = when a PC is online, download all driver links into `drivers\downloads\` so later PCs work offline |
 
-3. (Optional, recommended) copy extracted driver folders (with `.inf` files)
-   into `drivers\`. This works with **no internet**.
+3. Intel and Realtek Wi-Fi drivers and the Realtek Ethernet driver are
+   already in `drivers\` (in the zip). Add more driver folders (with `.inf`
+   files) there if a PC model needs them. This works with **no internet**.
 
 > Keep `config.json` only on the flash disk. Never commit Wi-Fi passwords or
 > the webhook URL to this repo — it is public.

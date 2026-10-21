@@ -130,25 +130,93 @@ jobs:
           Get-Content "$usb\inspection-log.csv"
           # It must have copied itself + drivers to this PC and run from there
           $local = "$env:ProgramData\PC-Inspection"
-          foreach ($f in 'PC-Inspection.exe','config.json','drivers\checksums.sha256') {
+          foreach ($f in 'PC-Inspection.exe','config.json') {
             if (-not (Test-Path "$local\$f")) { throw "Not copied to this PC: $f" }
           }
           if (-not (Test-Path "$local\inspection-log.csv")) { throw "Local copy did not run (no log on this PC)" }
           Write-Host "Ran from local copy: OK"
-      - name: Damaged driver files are detected
+      - name: Only the matching driver is copied; damaged files are caught
         shell: powershell
         run: |
-          Copy-Item flash\PC-Inspection\drivers broken -Recurse
-          $inf = Get-ChildItem broken -Recurse -Filter *.inf | Where-Object Length -gt 100000 | Select-Object -First 1
+          $usb = (Resolve-Path flash\PC-Inspection).Path
+          function Copied($dir) { @(Get-ChildItem "$dir\drivers" -Directory -ErrorAction SilentlyContinue | ForEach-Object Name) }
+
+          # Realtek RTL8852BE (the card from the real inspections) -> Realtek only
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Prepare-Local.ps1 -UsbRoot $usb -LocalDir "$PWD\prep-realtek" -HardwareIds 'PCI\VEN_10EC&DEV_B852&SUBSYS_8B3D103C&REV_00;PCI\VEN_10EC&DEV_B852&CC_028000'
+          if ($LASTEXITCODE -ne 0) { throw "Prepare failed ($LASTEXITCODE)" }
+          $c = Copied "$PWD\prep-realtek"; Write-Host "Realtek card -> copied: $($c -join ', ')"
+          if ($c.Count -ne 1 -or $c[0] -ne 'Realtek-WiFi') { throw "Expected only Realtek-WiFi" }
+
+          # Intel Wi-Fi 6E (AX210/AX211) -> Intel 6E only
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Prepare-Local.ps1 -UsbRoot $usb -LocalDir "$PWD\prep-intel" -HardwareIds 'PCI\VEN_8086&DEV_2725&SUBSYS_00248086&REV_1A'
+          if ($LASTEXITCODE -ne 0) { throw "Prepare failed ($LASTEXITCODE)" }
+          $c = Copied "$PWD\prep-intel"; Write-Host "Intel card -> copied: $($c -join ', ')"
+          if ($c.Count -ne 1 -or $c[0] -ne 'Intel-WiFi-6E') { throw "Expected only Intel-WiFi-6E" }
+
+          # A card with no driver on the flash disk -> nothing copied, clear message
+          $o = powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Prepare-Local.ps1 -UsbRoot $usb -LocalDir "$PWD\prep-none" -HardwareIds 'PCI\VEN_ABCD&DEV_1234' | Out-String
+          Write-Host $o
+          if ((Copied "$PWD\prep-none").Count -ne 0 -or $o -notmatch 'No driver on the flash disk matches') { throw "Unknown card must copy nothing and say so" }
+
+          # A damaged driver file on the flash disk is reported (exit code 3)
+          Copy-Item $usb dmg -Recurse
+          $inf = Get-Item dmg\drivers\Realtek-WiFi\netrtwlane601.inf
           $bytes = [IO.File]::ReadAllBytes($inf.FullName); [IO.File]::WriteAllBytes($inf.FullName, $bytes[0..999])
-          . .\scripts\Setup-Network.ps1
-          $out = (Test-DriverFiles (Resolve-Path broken).Path 6>&1 | Out-String)
-          Write-Host $out
-          if ($out -notmatch 'DAMAGED') { throw "Damaged file was not reported" }
-          $ok = (Test-DriverFiles (Resolve-Path flash\PC-Inspection\drivers).Path 6>&1 | Out-String)
-          if ($ok -notmatch 'checked: OK') { throw "Good files were not reported OK" }
+          $o = powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Prepare-Local.ps1 -UsbRoot "$PWD\dmg" -LocalDir "$PWD\prep-dmg" -HardwareIds 'PCI\VEN_10EC&DEV_B852' | Out-String
+          Write-Host $o
+          if ($LASTEXITCODE -ne 3 -or $o -notmatch 'DAMAGED') { throw "Damaged file was not reported" }
           Write-Host "Problem-device filter on this VM:"
+          . .\scripts\Setup-Network.ps1
           Get-ProblemNetworkDevices | Format-Table Name, PNPDeviceID
+          exit 0
+      - name: Upload happens once, never backfills, never queues
+        shell: powershell
+        run: |
+          $work = "$PWD\upl"; New-Item -ItemType Directory -Force $work | Out-Null
+          'ok' | Set-Content "$work\mode.txt"
+          # Fake Google Sheet webhook: counts requests, answers ok / duplicate
+          $server = Start-Job -ScriptBlock {
+            param($dir)
+            $l = [Net.HttpListener]::new(); $l.Prefixes.Add('http://127.0.0.1:18099/'); $l.Start()
+            while ($true) {
+              $ctx = $l.GetContext()
+              Add-Content "$dir\requests.txt" 'req'
+              $mode = (Get-Content "$dir\mode.txt" -ErrorAction SilentlyContinue | Select-Object -First 1)
+              $json = if ($mode -eq 'duplicate') { '{"status":"duplicate","message":"already there"}' } else { '{"status":"ok"}' }
+              $b = [Text.Encoding]::UTF8.GetBytes($json)
+              $ctx.Response.ContentType = 'application/json'
+              $ctx.Response.OutputStream.Write($b, 0, $b.Length); $ctx.Response.Close()
+            }
+          } -ArgumentList $work
+          Start-Sleep -Seconds 3
+          function Run($flash) {
+            New-Item -ItemType Directory -Force $flash | Out-Null
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Inspect-PC.ps1 -FlashRoot $flash -WebhookUrl 'http://127.0.0.1:18099/' -Inspector CI-Upload -SkipNetwork | Out-Null
+            (Import-Csv "$flash\inspection-log.csv" | Select-Object -Last 1).uploadStatus
+          }
+          function Requests { if (Test-Path "$work\requests.txt") { @(Get-Content "$work\requests.txt").Count } else { 0 } }
+
+          $a = Run "$PWD\pc1"
+          Write-Host "run 1: $a, requests so far: $(Requests)"
+          if ($a -ne 'uploaded' -or (Requests) -ne 1) { throw "First run must upload exactly once" }
+
+          $b = Run "$PWD\pc1"      # same PC again
+          Write-Host "run 2 (same PC): $b, requests so far: $(Requests)"
+          if ($b -ne 'already-sent' -or (Requests) -ne 1) { throw "Same PC must not upload again" }
+
+          'duplicate' | Set-Content "$work\mode.txt"
+          $c = Run "$PWD\pc2"      # fresh PC folder, Sheet already has the serial
+          Write-Host "run 3 (Sheet says duplicate): $c"
+          if ($c -ne 'already-in-sheet') { throw "A duplicate answer must be reported calmly, not as an error" }
+
+          Stop-Job $server; Remove-Job $server -Force; Start-Sleep -Seconds 1
+          $d = Run "$PWD\pc3"      # Sheet unreachable
+          Write-Host "run 4 (no internet): $d"
+          if ($d -ne 'failed') { throw "An unreachable Sheet must be recorded as failed" }
+          if ((Get-ChildItem "$PWD\pc3" -Filter 'pending*' -ErrorAction SilentlyContinue)) { throw "Nothing may be queued for later" }
+          if (-not (Get-ChildItem "$PWD\pc3\logs" -Filter 'run-*.txt')) { throw "Run log was not written" }
+          Write-Host "Upload logic OK"
+          exit 0
       - name: Finishes when the flash disk was removed
         shell: powershell
         run: |

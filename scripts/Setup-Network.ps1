@@ -11,7 +11,7 @@
 #>
 
 function Test-InternetConnection {
-    param([int]$TimeoutSec = 6)
+    param([int]$TimeoutSec = 4)
     # Microsoft's own connectivity probe - the same URL Windows uses for the
     # "No internet" icon. Tiny, plain HTTP, no redirects on a real network.
     try {
@@ -55,43 +55,20 @@ function Get-ProblemNetworkDevices {
     }
 }
 
-function Test-DriverFiles {
-    # drivers\checksums.sha256 (made at build time) lists every bundled
-    # driver file. A file that doesn't match was damaged while copying to
-    # the flash disk (e.g. unplugged before the copy finished).
-    param([string]$Folder)
-
-    $list = Join-Path $Folder 'checksums.sha256'
-    if (-not (Test-Path $list)) { return }
-    $bad = @()
-    foreach ($line in Get-Content $list) {
-        if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+)$') { continue }
-        $file = Join-Path $Folder ($Matches[2] -replace '/', '\')
-        if (-not (Test-Path $file)) { $bad += "$($Matches[2]) (missing)"; continue }
-        if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $Matches[1].ToUpper()) { $bad += $Matches[2] }
-    }
-    if ($bad.Count) {
-        Write-Host "    $($bad.Count) driver file(s) are DAMAGED on the flash disk:" -ForegroundColor Red
-        $bad | Select-Object -First 5 | ForEach-Object { Write-Host "      $_" -ForegroundColor Red }
-        Write-Host "    Fix: copy the PC-Inspection folder to the flash disk again and use" -ForegroundColor Yellow
-        Write-Host "    'Eject' before unplugging. (Linux: run 'sync' first.)" -ForegroundColor Yellow
-    } else {
-        Write-Host "    Driver files checked: OK" -ForegroundColor DarkGray
-    }
-}
-
 function Install-InfFolder {
     param([string]$Folder)
 
     $infs = Get-ChildItem -Path $Folder -Filter *.inf -Recurse -ErrorAction SilentlyContinue
     if (-not $infs) { return $false }
-    Test-DriverFiles $Folder
-    Write-Host "    Installing $($infs.Count) driver(s) from $Folder (can take a few minutes) ..." -ForegroundColor DarkGray
+    Write-Host "    Installing Wi-Fi driver ($($infs.Count) package(s)) ..." -ForegroundColor DarkGray
     $out = & pnputil.exe /add-driver (Join-Path $Folder '*.inf') /subdirs /install 2>&1
-    # pnputil's last lines are a summary: "Total driver packages: N",
-    # "Added driver packages: N"
-    $out | Where-Object { "$_" -match 'Total driver packages|Added driver packages|Failed' } |
-        ForEach-Object { Write-Host "    $("$_".Trim())" -ForegroundColor DarkGray }
+    $added = ($out | Select-String 'Added driver packages:\s*(\d+)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1)
+    $failed = @($out | Where-Object { "$_" -match 'Failed to add' })
+    if ($failed.Count) {
+        Write-Host "    $($failed.Count) driver package(s) could not be added:" -ForegroundColor Yellow
+        $failed | Select-Object -First 3 | ForEach-Object { Write-Host "      $("$_".Trim())" -ForegroundColor DarkGray }
+    }
+    if ($added) { Write-Host "    Driver packages installed: $added" -ForegroundColor DarkGray }
     return $true
 }
 
@@ -178,42 +155,52 @@ function Test-PackageMatches {
 }
 
 function Install-NetworkDrivers {
-    param($Config, [string]$DriversDir, [switch]$SkipFolder)
+    param($Config, [string]$DriversDir)
 
     $problems = @(Get-ProblemNetworkDevices)
     $cacheDir = Join-Path $DriversDir 'downloads'
 
-    # 1) Driver folders copied onto the flash disk (works with no internet)
-    if (-not $SkipFolder -and (Test-Path $DriversDir)) {
+    # 1) Driver files on this PC (prepared from the flash disk - works with no internet)
+    if (Test-Path $DriversDir) {
         Install-InfFolder $DriversDir | Out-Null
     }
 
-    # 2) Configured download links (cached on the flash disk after the first download)
-    $online = Test-InternetConnection
-    foreach ($pkg in @($Config.DriverPackages)) {
-        if (-not $pkg -or -not $pkg.Url) { continue }
-        if (-not (Test-PackageMatches $pkg $problems)) { continue }
-        $file = Get-DriverPackageFile -Package $pkg -CacheDir $cacheDir -Online $online
-        if ($file) { Install-DriverPackage -Package $pkg -File $file | Out-Null }
-        else { Write-Host "    $($pkg.Name): not on flash disk and no internet to download it" -ForegroundColor Yellow }
+    # 2) Configured download links (only when they match the missing hardware)
+    $links = @($Config.DriverPackages | Where-Object { $_ -and $_.Url })
+    if ($links.Count) {
+        $online = Test-InternetConnection
+        foreach ($pkg in $links) {
+            if (-not (Test-PackageMatches $pkg $problems)) { continue }
+            $file = Get-DriverPackageFile -Package $pkg -CacheDir $cacheDir -Online $online
+            if ($file) { Install-DriverPackage -Package $pkg -File $file | Out-Null }
+            else { Write-Host "    $($pkg.Name): not on this PC and no internet to download it" -ForegroundColor Yellow }
+        }
     }
 
-    # Ask Windows to re-detect hardware so the new drivers bind now
+    # Ask Windows to re-detect hardware so the new driver binds now
     & pnputil.exe /scan-devices 2>$null | Out-Null
-    Start-Sleep -Seconds 5
 }
 
-function Save-DriverPackagesToFlash {
-    # When this PC is online, download any configured driver package that is
-    # not on the flash disk yet, so the next PC without Wi-Fi drivers can be
-    # fixed offline.
-    param($Config, [string]$DriversDir)
+function Wait-ForWifiAdapter {
+    param([int]$TimeoutSec = 20)
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    do {
+        $a = Get-WifiAdapter
+        if ($a) { return $a }
+        Start-Sleep -Milliseconds 700
+    } while ((Get-Date) -lt $deadline)
+    return $null
+}
 
-    $cacheDir = Join-Path $DriversDir 'downloads'
-    foreach ($pkg in @($Config.DriverPackages)) {
-        if (-not $pkg -or -not $pkg.Url) { continue }
-        Get-DriverPackageFile -Package $pkg -CacheDir $cacheDir -Online $true | Out-Null
-    }
+function Start-WlanService {
+    # Wireless AutoConfig must be running for netsh wlan to work at all.
+    try {
+        $svc = Get-Service WlanSvc -ErrorAction Stop
+        if ($svc.Status -ne 'Running') {
+            Set-Service WlanSvc -StartupType Automatic -ErrorAction SilentlyContinue
+            Start-Service WlanSvc -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+        }
+    } catch {}
 }
 
 function ConvertTo-XmlText {
@@ -284,23 +271,37 @@ $keyXml
     }
 }
 
+function Get-ConnectedSsid {
+    $line = (& netsh.exe wlan show interfaces 2>$null) -match '^\s*SSID\s*:' | Select-Object -First 1
+    if ($line) { return ($line -split ':', 2)[1].Trim() }
+    return $null
+}
+
 function Connect-Wifi {
+    # Adds every configured network to this PC, then makes sure we are online.
+    # Returns the SSID we are connected to, or $null.
     param($Networks, [int]$WaitSec = 20)
 
-    foreach ($net in @($Networks)) {
-        if (-not $net -or -not $net.Ssid -or $net.Ssid -like 'YOUR-*') { continue }
+    $usable = @($Networks | Where-Object { $_ -and $_.Ssid -and $_.Ssid -notlike 'YOUR-*' })
+    foreach ($net in $usable) {
         Write-Host "    Adding Wi-Fi '$($net.Ssid)' ..." -ForegroundColor DarkGray
         if (-not (Add-WifiProfile $net)) {
-            Write-Host "    Could not add profile for '$($net.Ssid)'" -ForegroundColor Yellow
-            continue
+            Write-Host "    Could not add Wi-Fi '$($net.Ssid)' (check the name/password in config.json)" -ForegroundColor Yellow
         }
+    }
+    if (-not $usable.Count) { return $null }
+
+    # Already online (e.g. Windows auto-joined a saved network)? Nothing to do.
+    if (Test-InternetConnection -TimeoutSec 3) { return (Get-ConnectedSsid) }
+
+    foreach ($net in $usable) {
         & netsh.exe wlan connect name="$($net.Ssid)" 2>&1 | Out-Null
         $deadline = (Get-Date).AddSeconds($WaitSec)
         while ((Get-Date) -lt $deadline) {
-            Start-Sleep -Seconds 2
-            if (Test-InternetConnection -TimeoutSec 4) { return [string]$net.Ssid }
+            Start-Sleep -Seconds 1
+            if ((Get-ConnectedSsid) -eq [string]$net.Ssid -and (Test-InternetConnection -TimeoutSec 3)) { return [string]$net.Ssid }
         }
-        Write-Host "    No internet through '$($net.Ssid)', trying next ..." -ForegroundColor Yellow
+        Write-Host "    No internet through '$($net.Ssid)', trying the next network ..." -ForegroundColor DarkGray
     }
     return $null
 }
@@ -321,31 +322,17 @@ function Invoke-NetworkSetup {
     }
 
     Write-Host "`n[1/3] Network drivers & Wi-Fi" -ForegroundColor Cyan
-
-    # Wireless AutoConfig must be running for netsh wlan to work at all
-    try { Set-Service WlanSvc -StartupType Automatic -ErrorAction Stop; Start-Service WlanSvc -ErrorAction Stop } catch {}
-
-    # Install every driver in the flash disk's drivers\ folder on every PC
-    # (config.json "InstallAllDrivers": false = only when Wi-Fi is broken).
-    # Drivers that don't match this PC's hardware are just stored, not used.
-    $folderDone = $false
-    if ($Config.InstallAllDrivers -ne $false -and (Test-Path $DriversDir)) {
-        $folderDone = Install-InfFolder $DriversDir
-        if ($folderDone) {
-            & pnputil.exe /scan-devices 2>$null | Out-Null
-            Start-Sleep -Seconds 5
-        }
-    }
+    Start-WlanService
 
     $adapter  = Get-WifiAdapter
     $problems = @(Get-ProblemNetworkDevices)
 
-    if (-not $adapter -or $problems.Count -gt 0) {
-        if (-not $adapter) { Write-Host "    No working Wi-Fi adapter - installing drivers ..." -ForegroundColor Yellow }
-        foreach ($p in $problems) { Write-Host "    Missing/broken driver: $($p.Name) [$($p.PNPDeviceID)]" -ForegroundColor Yellow }
-        Install-NetworkDrivers -Config $Config -DriversDir $DriversDir -SkipFolder:$folderDone
-        try { Start-Service WlanSvc -ErrorAction Stop } catch {}
-        $adapter  = Get-WifiAdapter
+    if ($adapter -and $problems.Count -eq 0) {
+        Write-Host "    Wi-Fi driver already installed." -ForegroundColor DarkGray
+    } else {
+        Install-NetworkDrivers -Config $Config -DriversDir $DriversDir
+        Start-WlanService
+        $adapter  = Wait-ForWifiAdapter
         $problems = @(Get-ProblemNetworkDevices)
     }
 
@@ -354,7 +341,7 @@ function Invoke-NetworkSetup {
         $result.wifiDriverVersion = $adapter.DriverVersion
         Write-Host ("  {0,-12}: {1} (driver {2})" -f 'Wi-Fi card', $adapter.InterfaceDescription, $adapter.DriverVersion) -ForegroundColor Green
     } else {
-        Write-Host ("  {0,-12}: {1}" -f 'Wi-Fi card', 'NOT FOUND / no driver') -ForegroundColor Red
+        Write-Host ("  {0,-12}: {1}" -f 'Wi-Fi card', 'NOT FOUND (no driver for it on the flash disk?)') -ForegroundColor Red
     }
 
     if ($problems.Count -gt 0) {
@@ -367,15 +354,18 @@ function Invoke-NetworkSetup {
         $result.networkDriverStatus = 'No Wi-Fi adapter found'
     }
 
-    if ($adapter -and @($Config.WifiNetworks).Count -gt 0) {
-        $ssid = Connect-Wifi -Networks $Config.WifiNetworks
-        if ($ssid) { $result.wifiConnected = $ssid }
-    }
-    $result.internetOk = Test-InternetConnection
-    if (-not $result.wifiConnected -and $adapter) {
-        # Maybe it was already on Wi-Fi (or the profile auto-connected late)
-        $line = (& netsh.exe wlan show interfaces 2>$null) -match '^\s*SSID\s*:' | Select-Object -First 1
-        if ($line) { $result.wifiConnected = ($line -split ':', 2)[1].Trim() }
+    $ssid = $null
+    if ($adapter) { $ssid = Connect-Wifi -Networks $Config.WifiNetworks }
+    if ($ssid) {
+        $result.wifiConnected = $ssid
+        $result.internetOk = $true
+    } else {
+        # Not on a configured Wi-Fi: maybe on a cable / other network.
+        $result.internetOk = Test-InternetConnection
+        if ($adapter) {
+            $now = Get-ConnectedSsid
+            if ($now) { $result.wifiConnected = $now }
+        }
     }
 
     $wifiText = if ($result.wifiConnected) { "Connected to '$($result.wifiConnected)'" } elseif (-not $adapter) { 'No Wi-Fi card' } elseif (@($Config.WifiNetworks).Count -eq 0) { 'No Wi-Fi networks in config.json' } else { 'Not connected' }
@@ -383,10 +373,6 @@ function Invoke-NetworkSetup {
     Write-Host ("  {0,-12}: {1}" -f 'Wi-Fi', $wifiText) -ForegroundColor $wifiColor
     $netColor = if ($result.internetOk) { 'Green' } else { 'Red' }
     Write-Host ("  {0,-12}: {1}" -f 'Internet', $(if ($result.internetOk) { 'OK' } else { 'NO INTERNET' })) -ForegroundColor $netColor
-
-    if ($result.internetOk -and $Config.CacheDriversWhenOnline -ne $false) {
-        Save-DriverPackagesToFlash -Config $Config -DriversDir $DriversDir
-    }
 
     return $result
 }

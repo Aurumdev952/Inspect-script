@@ -11,9 +11,10 @@
 
   Manual (admin PowerShell): .\Inspect-PC.ps1 -FlashRoot E:\
 
-  Every run also appends to a local CSV (inspection-log.csv on the flash
-  disk) so nothing is lost even if the upload fails (e.g. no internet -
-  the backup rows can be pasted into the Sheet later).
+  Every run also appends to a local CSV (inspection-log.csv) with an
+  "uploadStatus" column, so a result is never lost even if the upload fails.
+  Results are uploaded once, by the PC that made them. Nothing is queued or
+  re-sent later, so the Sheet can't get duplicates from old failed uploads.
 #>
 
 param(
@@ -38,6 +39,20 @@ if (-not $DriversDir)         { $DriversDir         = Join-Path $FlashRoot 'driv
 
 . (Join-Path $PSScriptRoot 'Setup-Network.ps1')
 
+$ProgressPreference = 'SilentlyContinue'   # progress bars make web calls and zips much slower
+$runTimer = [Diagnostics.Stopwatch]::StartNew()
+$logsDir  = Join-Path $FlashRoot 'logs'
+$transcriptPath = Join-Path $logsDir ("run-{0:yyyyMMdd-HHmmss}.txt" -f (Get-Date))
+try {
+    New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+    Start-Transcript -Path $transcriptPath -Force | Out-Null
+} catch { $transcriptPath = $null }
+
+function Write-Took {
+    param([string]$What, [Diagnostics.Stopwatch]$Watch)
+    Write-Host ("  ({0}: {1:N0}s)" -f $What, $Watch.Elapsed.TotalSeconds) -ForegroundColor DarkGray
+}
+
 $config = [PSCustomObject]@{}
 if (Test-Path $ConfigPath) {
     try {
@@ -50,6 +65,28 @@ if (Test-Path $ConfigPath) {
     Write-Host "No config.json found at $ConfigPath - Wi-Fi setup and upload will be skipped." -ForegroundColor Yellow
 }
 if (-not $WebhookUrl) { $WebhookUrl = $config.WebhookUrl }
+
+# Two slow Windows queries (Windows activation, disk power-on hours) run in
+# the background while the inspector picks a name and the network is set up.
+$slowProbes = Start-Job -ScriptBlock {
+    $r = @{ activation = $null; powerOnHours = $null }
+    try {
+        $product = Get-CimInstance SoftwareLicensingProduct -ErrorAction Stop `
+            -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL" |
+            Select-Object -First 1
+        if ($product) {
+            $statusMap = @{ 0 = 'Unlicensed'; 1 = 'Licensed'; 2 = 'OOB Grace'; 3 = 'OOT Grace'; 4 = 'Non-Genuine Grace'; 5 = 'Notification'; 6 = 'Extended Grace' }
+            $r.activation = $statusMap[[int]$product.LicenseStatus]
+        }
+    } catch {}
+    try {
+        $counters = Get-PhysicalDisk -ErrorAction Stop | Get-StorageReliabilityCounter -ErrorAction Stop
+        if ($counters) {
+            $r.powerOnHours = ($counters | Where-Object { $null -ne $_.PowerOnHours } | Measure-Object -Property PowerOnHours -Minimum).Minimum
+        }
+    } catch {}
+    $r
+}
 
 Write-Host "==============================================" -ForegroundColor Cyan
 Write-Host "            PC INSPECTION" -ForegroundColor Cyan
@@ -97,13 +134,16 @@ if (-not $Inspector) {
 }
 
 # --- Network drivers + Wi-Fi (before the spec checks, so upload works) ---
+$netTimer = [Diagnostics.Stopwatch]::StartNew()
 if ($SkipNetwork) {
     $network = [ordered]@{ wifiAdapter = ''; wifiDriverVersion = ''; networkDriverStatus = 'Skipped'; wifiConnected = ''; internetOk = (Test-InternetConnection) }
 } else {
     $network = Invoke-NetworkSetup -Config $config -DriversDir $DriversDir
 }
+Write-Took 'network' $netTimer
 
 Write-Host "`n[2/3] Hardware & Windows checks" -ForegroundColor Cyan
+$hwTimer = [Diagnostics.Stopwatch]::StartNew()
 
 function Get-CpuSpecStatus {
     param([string]$CpuName)
@@ -204,22 +244,6 @@ function Get-DiskTypeStatus {
     return "Below spec ($MediaType, not SSD)"
 }
 
-function Get-WindowsActivationStatus {
-    # ApplicationID below is the fixed "Windows activation technologies" ID,
-    # used to filter out any non-Windows entries (e.g. Office) in the table.
-    try {
-        $product = Get-CimInstance SoftwareLicensingProduct -ErrorAction Stop `
-            -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL" |
-            Select-Object -First 1
-        if ($product) {
-            $statusMap = @{ 0 = 'Unlicensed'; 1 = 'Licensed'; 2 = 'OOB Grace'; 3 = 'OOT Grace'; 4 = 'Non-Genuine Grace'; 5 = 'Notification'; 6 = 'Extended Grace' }
-            $label = $statusMap[[int]$product.LicenseStatus]
-            if ($label) { return $label }
-        }
-    } catch {}
-    return 'Unknown - verify manually (run slmgr /xpr)'
-}
-
 function Write-SpecLine {
     param([string]$Label, [string]$Status, [string]$Detail = $Status)
 
@@ -263,15 +287,12 @@ Write-BoolLine "OS" $isWindows $osCaption
 $installDate = $os.InstallDate
 $daysSinceInstall = if ($installDate) { (New-TimeSpan -Start $installDate -End (Get-Date)).Days } else { $null }
 
-$powerOnHours = $null
-try {
-    $counters = Get-PhysicalDisk -ErrorAction Stop | Get-StorageReliabilityCounter -ErrorAction Stop
-    if ($counters) {
-        $powerOnHours = ($counters | Where-Object { $_.PowerOnHours -ne $null } | Measure-Object -Property PowerOnHours -Minimum).Minimum
-    }
-} catch {
-    $powerOnHours = $null
+$probe = $null
+if ($slowProbes) {
+    if (Wait-Job $slowProbes -Timeout 45) { $probe = Receive-Job $slowProbes -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    Remove-Job $slowProbes -Force -ErrorAction SilentlyContinue
 }
+$powerOnHours = if ($probe) { $probe.powerOnHours } else { $null }
 
 if ($null -ne $powerOnHours) {
     $condition = if ($powerOnHours -le 24) { "Likely new (disk power-on hours: $powerOnHours)" }
@@ -284,7 +305,7 @@ if ($null -ne $powerOnHours) {
 $conditionColor = if ($condition -like 'Likely new*') { 'Green' } elseif ($condition -like 'Likely used*') { 'Gray' } else { 'DarkYellow' }
 Write-Host ("  {0,-12}: {1}" -f "Condition", $condition) -ForegroundColor $conditionColor
 
-$activationStatus = Get-WindowsActivationStatus
+$activationStatus = if ($probe -and $probe.activation) { $probe.activation } else { 'Unknown - verify manually (run slmgr /xpr)' }
 $isActivated    = $activationStatus -eq 'Licensed'
 Write-BoolLine "Activation" $isActivated $activationStatus
 
@@ -333,12 +354,11 @@ if (-not (Test-SpecOk $diskTypeStatus)) { $notes += $diskTypeStatus }
 if ($condition -like 'Unverified*') { $notes += 'Condition needs manual confirmation' }
 $notesText = ($notes -join '; ')
 
+Write-Took 'checks' $hwTimer
 $overallColor = if ($overallPass) { 'Green' } else { 'Red' }
-Write-Host ("`n  === OVERALL: {0} ===" -f $overallResult) -ForegroundColor $overallColor
-if ($notesText) { Write-Host "  Reasons: $notesText" -ForegroundColor Yellow }
 
 $record = [ordered]@{
-    timestamp         = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    timestamp         = [DateTime]::UtcNow.AddHours($(if ($null -ne $config.TimeZoneOffsetHours) { [double]$config.TimeZoneOffsetHours } else { 2 })).ToString('yyyy-MM-dd HH:mm:ss')
     inspector         = $Inspector
     serialNumber      = $serialNumber
     hostname          = $hostname
@@ -364,66 +384,86 @@ $record = [ordered]@{
     internetOk        = [bool]$network.internetOk
 }
 
-# --- Local backup log (always written, even if the upload fails) ---
-try {
-    [PSCustomObject]$record | Export-Csv -Path $LogPath -Append -Force -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
-    Write-Host "  Logged to: $LogPath" -ForegroundColor DarkGray
-} catch {
-    Write-Warning "  Could not write $LogPath ($($_.Exception.Message))"
-}
-
-# --- Upload to Google Sheet ---
-# Rows that could not be uploaded (no internet) wait in pending-uploads.txt
-# on the flash disk, one JSON row per line, and are sent automatically the
-# next time any PC is online.
-$pendingPath = Join-Path $FlashRoot 'pending-uploads.txt'
+# --- Upload to the Google Sheet: once, by this PC, no queue --------------
+# A result is sent a single time. If that fails (no internet...), it is NOT
+# queued and NOT retried by other PCs later: the row stays in
+# inspection-log.csv (uploadStatus = "failed") and the PC is simply
+# inspected again when it is online. The Sheet rejects a serial number it
+# already has, and this PC remembers what it already sent (uploaded.txt).
+Write-Host "`n[3/3] Saving result" -ForegroundColor Cyan
+$ledgerPath = Join-Path $FlashRoot 'uploaded.txt'
 
 function Send-InspectionRow {
-    # Returns 'ok', 'duplicate:<message>' or throws on network/server error.
+    # Returns 'ok' or 'duplicate'; throws on network/server errors.
     param([string]$Json)
-    $response = Invoke-RestMethod -Uri $WebhookUrl -Method Post -TimeoutSec 30 `
+    $response = Invoke-RestMethod -Uri $WebhookUrl -Method Post -TimeoutSec 25 `
         -Body ([Text.Encoding]::UTF8.GetBytes($Json)) -ContentType 'application/json; charset=utf-8'
-    if ($response.status -eq 'duplicate') { return "duplicate:$($response.message)" }
+    if ($response.status -eq 'duplicate') { return 'duplicate' }
     return 'ok'
 }
 
-Write-Host "`n[3/3] Saving result" -ForegroundColor Cyan
-if ($NoUpload) {
-    Write-Host "  Upload skipped (-NoUpload).`n" -ForegroundColor DarkGray
-} elseif (-not $WebhookUrl) {
-    Write-Host "  No WebhookUrl in config.json - result only saved to $LogPath`n" -ForegroundColor Yellow
-} else {
-    # 1) Older rows waiting from offline PCs
-    if (Test-Path $pendingPath) {
-        $stillPending = @()
-        $sent = 0
-        foreach ($line in (Get-Content $pendingPath -Encoding UTF8 | Where-Object { $_.Trim() })) {
-            try { Send-InspectionRow $line | Out-Null; $sent++ } catch { $stillPending += $line }
-        }
-        if ($stillPending.Count) { $stillPending | Set-Content $pendingPath -Encoding UTF8 }
-        else { Remove-Item $pendingPath -ErrorAction SilentlyContinue }
-        if ($sent) { Write-Host "  Sent $sent saved result(s) from earlier offline PCs." -ForegroundColor Green }
-    }
+$uploadStatus = 'skipped'
+$uploadNote = ''
+$alreadySent = $false
+try { $alreadySent = (Test-Path $ledgerPath) -and ((Get-Content $ledgerPath -ErrorAction Stop) -contains $serialNumber) } catch {}
 
-    # 2) This PC
+if ($NoUpload) {
+    $uploadNote = 'Upload skipped (-NoUpload).'
+} elseif (-not $WebhookUrl) {
+    $uploadNote = 'No WebhookUrl in config.json - result saved on this PC only.'
+} elseif ($alreadySent) {
+    $uploadStatus = 'already-sent'
+    $uploadNote = 'This PC was already sent to the Sheet earlier - nothing to add.'
+} else {
     $json = $record | ConvertTo-Json -Depth 3 -Compress
-    try {
-        $status = Send-InspectionRow $json
-        if ($status -like 'duplicate:*') {
-            Write-Host "  NOT SAVED: $($status.Substring(10))`n" -ForegroundColor Red
-        } else {
-            Write-Host "  Uploaded to Google Sheet.`n" -ForegroundColor Green
+    $lastError = ''
+    foreach ($attempt in 1..2) {
+        try {
+            $status = Send-InspectionRow $json
+            $uploadStatus = if ($status -eq 'duplicate') { 'already-in-sheet' } else { 'uploaded' }
+            break
+        } catch {
+            $lastError = $_.Exception.Message
+            if ($attempt -eq 1) { Start-Sleep -Seconds 3 }
         }
-    } catch {
-        try { Add-Content -Path $pendingPath -Value $json -Encoding UTF8 } catch {}
-        Write-Warning "  Upload FAILED - saved on the flash disk, it will upload automatically the next time a PC is online. Error: $($_.Exception.Message)"
-        Write-Host ""
+    }
+    switch ($uploadStatus) {
+        'uploaded'         { $uploadNote = 'Uploaded to the Google Sheet.' }
+        'already-in-sheet' { $uploadNote = 'This PC is already in the Sheet (same serial number) - nothing added.' }
+        default {
+            $uploadStatus = 'failed'
+            $uploadNote = 'Could not upload (no internet?). Result is saved on this PC - run the inspection again when online.'
+            Write-Host "  (detail: $lastError)" -ForegroundColor DarkGray
+        }
+    }
+    if ($uploadStatus -in 'uploaded', 'already-in-sheet') {
+        try { Add-Content -Path $ledgerPath -Value $serialNumber -Encoding ASCII } catch {}
     }
 }
 
-# --- Copy the result back to the flash disk, if it is still plugged in ---
+# --- Local log (written after the upload, so it shows what really happened) ---
+$record['uploadStatus'] = $uploadStatus
+try {
+    [PSCustomObject]$record | Export-Csv -Path $LogPath -Append -Force -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+} catch {
+    Write-Host "  Could not write $LogPath ($($_.Exception.Message))" -ForegroundColor Yellow
+}
+
+# --- Summary ------------------------------------------------------------
+$uploadColor = switch ($uploadStatus) { 'uploaded' { 'Green' } 'already-in-sheet' { 'Green' } 'already-sent' { 'Green' } 'failed' { 'Yellow' } default { 'DarkGray' } }
+Write-Host ""
+Write-Host "==============================================" -ForegroundColor $overallColor
+Write-Host ("  RESULT: {0}" -f $overallResult) -ForegroundColor $overallColor
+if ($notesText) { Write-Host "  $notesText" -ForegroundColor Yellow }
+Write-Host ("  Wi-Fi: {0}   Internet: {1}" -f $(if ($network.wifiConnected) { $network.wifiConnected } else { 'not connected' }), $(if ($network.internetOk) { 'OK' } else { 'none' })) -ForegroundColor Gray
+Write-Host "  $uploadNote" -ForegroundColor $uploadColor
+Write-Host ("  Done in {0:N0} seconds." -f $runTimer.Elapsed.TotalSeconds) -ForegroundColor DarkGray
+Write-Host "==============================================" -ForegroundColor $overallColor
+
+# --- Copy result + logs back to the flash disk, if it is still plugged in ---
 # (Plain .NET path calls: Join-Path/Test-Path throw once the flash disk's
 # drive letter is gone.)
+try { Stop-Transcript | Out-Null } catch {}
 if ($UsbRoot) {
     $usbOk = $false
     try { $usbOk = [IO.File]::Exists([IO.Path]::Combine($UsbRoot, 'config.json')) } catch {}
@@ -431,15 +471,15 @@ if ($UsbRoot) {
         try {
             [PSCustomObject]$record | Export-Csv -Path ([IO.Path]::Combine($UsbRoot, 'inspection-log.csv')) -Append -Force -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
             if (Test-Path $InspectorCachePath) { Copy-Item $InspectorCachePath ([IO.Path]::Combine($UsbRoot, 'inspector-name.txt')) -Force }
-            $usbPending = [IO.Path]::Combine($UsbRoot, 'pending-uploads.txt')
-            if (Test-Path $pendingPath) { Copy-Item $pendingPath $usbPending -Force }
-            elseif ([IO.File]::Exists($usbPending)) { [IO.File]::Delete($usbPending) }
-            Write-Host "  Also saved to the flash disk: $UsbRoot" -ForegroundColor DarkGray
+            $usbLogs = [IO.Path]::Combine($UsbRoot, 'logs')
+            [void][IO.Directory]::CreateDirectory($usbLogs)
+            if ($transcriptPath -and (Test-Path $transcriptPath)) { Copy-Item $transcriptPath $usbLogs -Force }
+            Write-Host "  Result also copied to the flash disk." -ForegroundColor DarkGray
         } catch {
-            Write-Host "  Could not write to the flash disk ($($_.Exception.Message)) - result kept on this PC: $LogPath" -ForegroundColor Yellow
+            Write-Host "  Could not write to the flash disk - result is on this PC: $LogPath" -ForegroundColor DarkGray
         }
     } else {
-        Write-Host "  Flash disk removed - result kept on this PC: $LogPath" -ForegroundColor DarkGray
+        Write-Host "  Flash disk removed - result is on this PC: $LogPath" -ForegroundColor DarkGray
     }
 }
 

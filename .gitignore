@@ -1,0 +1,5 @@
+inspection-log.csv
+inspector-name.txt
+*.zip
+dist/
+*.exe

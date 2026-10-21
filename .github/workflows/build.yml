@@ -1,0 +1,107 @@
+name: Build & Release
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v1.0.1). Empty = build only.'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      release: ${{ steps.ver.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - id: ver
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF#refs/tags/}"; rel=true
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            v="$INPUT_VERSION"; rel=true
+          elif [[ "$COMMIT_MSG" == *"[release]"* ]]; then
+            v="v1.0.${GITHUB_RUN_NUMBER}"; rel=true
+          else
+            v="dev-${GITHUB_SHA::7}"; rel=false
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "release=$rel" >> "$GITHUB_OUTPUT"
+      - name: Build PC-Inspection.exe
+        run: GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" -o dist/PC-Inspection.exe .
+      - name: Package flash disk zip
+        run: |
+          cp -r flashdisk/. dist/
+          mkdir -p dist/scripts && cp scripts/*.ps1 dist/scripts/
+          cp Run-Inspection.bat dist/
+          cd dist && zip -r ../PC-Inspection-${{ steps.ver.outputs.version }}.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PC-Inspection
+          path: |
+            PC-Inspection-*.zip
+            dist/PC-Inspection.exe
+
+  windows-smoke-test:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: PC-Inspection
+      - name: PowerShell syntax check
+        shell: powershell
+        run: |
+          foreach ($f in Get-ChildItem scripts\*.ps1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | Format-List; throw "Syntax errors in $($f.Name)" }
+            Write-Host "OK: $($f.Name)"
+          }
+      - name: Run the exe end-to-end (no upload)
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force usb | Out-Null
+          Copy-Item dist\PC-Inspection.exe usb\
+          Copy-Item flashdisk\config.json usb\
+          $p = Start-Process usb\PC-Inspection.exe -ArgumentList '--no-pause','-Inspector','CI-Test','-NoUpload' -NoNewWindow -Wait -PassThru
+          Write-Host "Exit code: $($p.ExitCode)"
+          # 0 = PASS, 2 = FAIL (expected on a CI VM: no Wi-Fi, not 14th-gen i5)
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 2) { throw "Inspection crashed (exit $($p.ExitCode))" }
+          if (-not (Test-Path usb\inspection-log.csv)) { throw "inspection-log.csv was not written" }
+          Get-Content usb\inspection-log.csv
+
+  release:
+    needs: [build, windows-smoke-test]
+    if: needs.build.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: PC-Inspection
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.version }}
+          name: PC Inspection ${{ needs.build.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            PC-Inspection-*.zip
+            dist/PC-Inspection.exe
+          body: |
+            **Download `PC-Inspection-${{ needs.build.outputs.version }}.zip`**, unzip it to the root of the flash disk, fill in `config.json`, then double-click `PC-Inspection.exe` on each PC.
+            See RUNME.txt in the zip for details.

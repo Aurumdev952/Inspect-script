@@ -1,0 +1,61 @@
+# PC Inspection (one-click, from a flash disk)
+
+Double-click `PC-Inspection.exe` on a flash disk and it:
+
+1. Asks for admin rights (needed to install drivers and add Wi-Fi).
+2. Asks the inspector's name (remembered on the flash disk; Enter reuses it).
+3. **Network:** if the Wi-Fi card has no working driver, installs drivers from
+   `drivers\` on the flash disk, or downloads them from the links in
+   `config.json`. Then adds your Wi-Fi networks and connects.
+4. **Specs:** checks CPU (i5 14th gen), RAM (8GB), disk (256GB SSD), Windows
+   activation, condition (disk power-on hours).
+5. Shows **PASS / FAIL**, saves a row to `inspection-log.csv` on the flash
+   disk, and uploads it to the Google Sheet.
+
+## Set up a flash disk
+
+1. Download `PC-Inspection-<version>.zip` from
+   [Releases](../../releases/latest) and unzip it to the **root** of the flash disk.
+2. Edit `config.json`:
+
+| Field | What to put |
+|---|---|
+| `WebhookUrl` | Google Apps Script web-app URL (from `AppsScript/Code.gs`) |
+| `WifiNetworks` | List of `{ "Ssid", "Password", "Security" }`. Security: `WPA2PSK` (default), `WPA3SAE`, `WPAPSK`, `OPEN`. Add `"Hidden": true` for hidden networks. Tried in order. |
+| `DriverPackages` | Network driver links: `Name`, `Url`, `Type` (`zip`, `exe`, `msi`, `inf`, `cab`), optional `SilentArgs` (for `exe`), optional `MatchHardwareIds` (e.g. `VEN_8086` Intel, `VEN_10EC` Realtek, `VEN_14C3` MediaTek, `VEN_17CB` Qualcomm) |
+| `RequireWifi` | `true` = PC fails if it has no working Wi-Fi card/driver |
+| `CacheDriversWhenOnline` | `true` = when a PC is online, download all driver links into `drivers\downloads\` so later PCs work offline |
+
+3. (Optional, recommended) copy extracted driver folders (with `.inf` files)
+   into `drivers\`. This works with **no internet**.
+
+> Keep `config.json` only on the flash disk. Never commit Wi-Fi passwords or
+> the webhook URL to this repo — it is public.
+
+## Auto-run when the flash disk is plugged in?
+
+Not possible on stock Windows 7/10/11: Windows blocks AutoRun from USB flash
+disks (it was the main way USB viruses spread). `autorun.inf` only sets the
+drive's name and icon. The inspector double-clicks `PC-Inspection.exe`.
+
+## Google Sheet
+
+`AppsScript/Code.gs` now has 5 more columns (Wi-Fi adapter, driver version,
+driver status, Wi-Fi connected, internet OK). Paste it into the Sheet's Apps
+Script and **deploy a new version** to record them. The old deployment still
+works; it just ignores the new fields.
+
+## Build / release
+
+- Every push builds the exe on GitHub Actions and runs it on a Windows VM.
+- To publish a release: push a tag `v1.2.3`, run the workflow manually with a
+  version, or put `[release]` in the commit message.
+- Local build: `GOOS=windows GOARCH=amd64 go build -o PC-Inspection.exe .`
+
+## Files
+
+- `main.go` — the exe: elevates, unpacks the embedded scripts, runs them.
+- `scripts/Inspect-PC.ps1` — the inspection (specs, log, upload).
+- `scripts/Setup-Network.ps1` — drivers + Wi-Fi + internet check.
+- `flashdisk/` — files that go on the flash disk next to the exe.
+- `Run-Inspection.bat` — backup launcher if the exe is blocked.

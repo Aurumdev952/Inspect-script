@@ -334,7 +334,7 @@ function Test-SpecOk {
 # A PC must have a working Wi-Fi card + network drivers unless config.json
 # sets "RequireWifi": false.
 $requireWifi = $config.RequireWifi -ne $false
-$networkOk = $SkipNetwork -or (-not $requireWifi) -or ($network.wifiAdapter -and $network.networkDriverStatus -eq 'OK')
+$networkOk = $SkipNetwork -or (-not $requireWifi) -or [bool]$network.wifiAdapter
 
 $overallPass = $isWindows -and $isActivated -and $networkOk -and
     (Test-SpecOk $cpuSpecStatus) -and
@@ -346,7 +346,7 @@ $overallResult = if ($overallPass) { 'PASS' } else { 'FAIL' }
 $notes = @()
 if (-not $isWindows) { $notes += "OS is not Windows ($osCaption)" }
 if (-not $isActivated) { $notes += "Windows not activated ($activationStatus)" }
-if (-not $networkOk) { $notes += "Network: $($network.networkDriverStatus)" }
+if (-not $networkOk) { $notes += "Wi-Fi: $($network.networkDriverStatus)" }
 if (-not (Test-SpecOk $cpuSpecStatus)) { $notes += $cpuSpecStatus }
 if (-not (Test-SpecOk $ramSpecStatus)) { $notes += $ramSpecStatus }
 if (-not (Test-SpecOk $diskSpecStatus)) { $notes += $diskSpecStatus }

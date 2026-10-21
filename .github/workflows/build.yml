@@ -87,6 +87,11 @@ jobs:
             if ($errors) { $errors | Format-List; throw "Syntax errors in $($f.Name)" }
             Write-Host "OK: $($f.Name)"
           }
+      - name: Network result rules (Wi-Fi works = OK, other devices don't matter)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-NetworkRules.ps1 -Scripts "$PWD\scripts"
+          if ($LASTEXITCODE -ne 0) { throw "Network rules test failed" }
       - name: Windows Defender scan of the exe
         continue-on-error: true
         shell: powershell

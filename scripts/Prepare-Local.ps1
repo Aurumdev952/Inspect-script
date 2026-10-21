@@ -83,7 +83,7 @@ if ($AllDrivers) {
     if (-not $HardwareIds) {
         $adapter  = Get-WifiAdapter
         $problems = @(Get-ProblemNetworkDevices)
-        if ($adapter -and $problems.Count -eq 0) { Write-Host "  Wi-Fi driver already installed on this PC - no drivers to copy." -ForegroundColor DarkGray; exit 0 }
+        if ($adapter) { Write-Host "  Wi-Fi driver already installed on this PC - no drivers to copy." -ForegroundColor DarkGray; exit 0 }
         $HardwareIds = @($problems | ForEach-Object { $_.HardwareID })
     }
     $keys = Get-DriverKeys $HardwareIds

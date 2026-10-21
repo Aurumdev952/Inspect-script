@@ -85,6 +85,16 @@ jobs:
           if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 2) { throw "Inspection crashed (exit $($p.ExitCode))" }
           if (-not (Test-Path usb\inspection-log.csv)) { throw "inspection-log.csv was not written" }
           Get-Content usb\inspection-log.csv
+      - name: Inspector menu picks a name by number
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force menu | Out-Null
+          Copy-Item dist\PC-Inspection.exe menu\
+          '{ "Inspectors": ["Alice Test", "Bob Test"], "RequireWifi": false }' | Set-Content menu\config.json
+          cmd /c "echo 2| menu\PC-Inspection.exe --no-pause -NoUpload -SkipNetwork"
+          $row = Import-Csv menu\inspection-log.csv | Select-Object -Last 1
+          Write-Host "Inspector recorded: $($row.inspector)"
+          if ($row.inspector -ne 'Bob Test') { throw "Menu did not record 'Bob Test'" }
 
   release:
     needs: [build, windows-smoke-test]

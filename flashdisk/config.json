@@ -1,0 +1,26 @@
+{
+  "WebhookUrl": "",
+
+  "WifiNetworks": [
+    { "Ssid": "YOUR-WIFI-NAME", "Password": "YOUR-WIFI-PASSWORD", "Security": "WPA2PSK" }
+  ],
+
+  "RequireWifi": true,
+  "CacheDriversWhenOnline": true,
+
+  "DriverPackages": [
+    {
+      "Name": "Example - Intel Wi-Fi driver (replace with your real link)",
+      "Url": "",
+      "Type": "zip",
+      "MatchHardwareIds": ["VEN_8086"]
+    },
+    {
+      "Name": "Example - Realtek Wi-Fi installer (replace with your real link)",
+      "Url": "",
+      "Type": "exe",
+      "SilentArgs": "/s",
+      "MatchHardwareIds": ["VEN_10EC"]
+    }
+  ]
+}

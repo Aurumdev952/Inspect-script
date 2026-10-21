@@ -1,0 +1,29 @@
+PC INSPECTION - HOW TO USE
+==========================
+
+ONE-TIME SETUP (on your own PC):
+  1. Copy everything from the release zip to the ROOT of the flash disk.
+  2. Open config.json in Notepad and fill in:
+       - WebhookUrl   : the Google Apps Script URL (from the team)
+       - WifiNetworks : Wi-Fi name + password (you can list several)
+       - DriverPackages: download links for network drivers (optional)
+  3. (Optional) Put driver folders with .inf files in drivers\
+
+ON EACH PC:
+  1. Plug in the flash disk.
+  2. Double-click PC-Inspection.exe  (click "Yes" on the admin prompt)
+  3. Type your name the first time (press Enter next time to reuse it).
+  4. Wait for the PASS / FAIL result, then press Enter to close.
+
+  The tool: installs missing network drivers, adds the Wi-Fi and connects,
+  checks CPU / RAM / disk / Windows activation, then uploads the result.
+  If there is no internet, the result is still saved to
+  inspection-log.csv on the flash disk.
+
+WHY IT DOES NOT START BY ITSELF WHEN I PLUG THE FLASH DISK:
+  Windows (7, 10, 11) blocks auto-run from USB flash disks on purpose - it
+  is how USB viruses used to spread. autorun.inf only gives the drive a
+  name and icon. You must double-click PC-Inspection.exe.
+
+IF WINDOWS SAYS "Windows protected your PC":
+  Click "More info" -> "Run anyway". (The exe is not code-signed.)

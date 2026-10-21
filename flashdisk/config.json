@@ -8,8 +8,8 @@
   ],
 
   "RequireWifi": true,
-  "InstallAllDrivers": true,
-  "CacheDriversWhenOnline": true,
+
+  "TimeZoneOffsetHours": 2,
 
   "DriverPackages": [
     {

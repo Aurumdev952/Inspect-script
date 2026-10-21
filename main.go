@@ -104,11 +104,6 @@ func run(allArgs, psArgs []string, opt options) (int, bool) {
 		return 0, false
 	}
 
-	local := localDir()
-	if !opt.noRelocate && !strings.EqualFold(filepath.Clean(root), filepath.Clean(local)) {
-		return relocate(exe, root, local, psArgs, opt)
-	}
-
 	tmp, err := os.MkdirTemp("", "pc-inspection-")
 	if err != nil {
 		fmt.Println("Cannot create temp folder:", err)
@@ -125,10 +120,12 @@ func run(allArgs, psArgs []string, opt options) (int, bool) {
 		}
 	}
 
-	ps := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-	if _, err := os.Stat(ps); err != nil {
-		ps = "powershell.exe"
+	local := localDir()
+	if !opt.noRelocate && !strings.EqualFold(filepath.Clean(root), filepath.Clean(local)) {
+		return relocate(exe, root, local, tmp, psArgs, opt)
 	}
+
+	ps := powershellPath()
 	cmdArgs := []string{
 		"-NoProfile", "-ExecutionPolicy", "Bypass",
 		"-File", filepath.Join(tmp, "Inspect-PC.ps1"),
@@ -151,11 +148,21 @@ func run(allArgs, psArgs []string, opt options) (int, bool) {
 	return 0, true
 }
 
-// relocate copies the exe, config.json, drivers and saved state from the
-// flash disk to this PC, then restarts from the local copy in the same
-// window and exits - nothing keeps the flash disk busy after that.
-func relocate(exe, usb, local string, psArgs []string, opt options) (int, bool) {
-	fmt.Println("Copying the tool and drivers to this PC ...")
+// powershellPath returns the Windows PowerShell 5.1 that ships with Windows.
+func powershellPath() string {
+	ps := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	if _, err := os.Stat(ps); err != nil {
+		return "powershell.exe"
+	}
+	return ps
+}
+
+// relocate copies the exe, config.json and the inspector name from the flash
+// disk to this PC, lets Prepare-Local.ps1 copy only the driver this PC needs,
+// then restarts from the local copy in the same window and exits - nothing
+// keeps the flash disk busy after that.
+func relocate(exe, usb, local, scriptsDir string, psArgs []string, opt options) (int, bool) {
+	fmt.Println("Copying the tool to this PC ...")
 	if err := os.MkdirAll(local, 0o755); err != nil {
 		fmt.Println("Cannot create", local, ":", err)
 		return 1, true
@@ -171,17 +178,16 @@ func relocate(exe, usb, local string, psArgs []string, opt options) (int, bool) 
 			return 1, true
 		}
 	}
-	// Rows waiting for upload move to this PC (they are sent from here and
-	// whatever is still unsent is written back to the flash disk at the end).
-	if data, err := os.ReadFile(filepath.Join(usb, "pending-uploads.txt")); err == nil && len(data) > 0 {
-		f, err := os.OpenFile(filepath.Join(local, "pending-uploads.txt"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err == nil {
-			f.Write(data)
-			f.Close()
+
+	prep := exec.Command(powershellPath(), "-NoProfile", "-ExecutionPolicy", "Bypass",
+		"-File", filepath.Join(scriptsDir, "Prepare-Local.ps1"), "-UsbRoot", usb, "-LocalDir", local)
+	prep.Stdin, prep.Stdout, prep.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := prep.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 3 {
+			// Damaged driver files: the script already explained how to fix it.
+			return 3, true
 		}
-	}
-	if err := copyDir(filepath.Join(usb, "drivers"), filepath.Join(local, "drivers")); err != nil {
-		fmt.Println("Copying drivers failed:", err)
+		fmt.Println("Preparing the driver failed:", err)
 		return 1, true
 	}
 
@@ -247,23 +253,6 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.Chtimes(dst, si.ModTime(), si.ModTime())
-}
-
-func copyDir(src, dst string) error {
-	if _, err := os.Stat(src); os.IsNotExist(err) {
-		return nil
-	}
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(src, path)
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		return copyFile(path, target)
-	})
 }
 
 // isAdmin: opening the raw physical disk only works for an elevated process.

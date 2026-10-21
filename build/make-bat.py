@@ -18,15 +18,22 @@ if errorlevel 1 (
     powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
-rem Copy everything to this PC and continue from there, so the flash disk
-rem can be removed right away. (Plain gotos, no ( ) blocks: a folder name
-rem with brackets would break them.)
+set "BATFILE=%~f0"
+set "PCI_TMP=%TEMP%\pc-inspection-%RANDOM%%RANDOM%"
 set "LOCALDIR=%ProgramData%\PC-Inspection"
+mkdir "%PCI_TMP%" >nul 2>&1
+call :extract
+rem Plain gotos, no ( ) blocks: a folder name with brackets would break them.
 if /i "%~dp0"=="%LOCALDIR%\" goto :local
-echo Copying the tool and drivers to this PC ...
-robocopy "%~dp0." "%LOCALDIR%" /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XF inspection-log.csv pending-uploads.txt PC-Inspection.exe >nul
+
+rem --- Stage 1 (flash disk): copy the small files, then only the driver this
+rem --- PC needs, then continue from the PC so the flash disk can be removed.
+echo Copying the tool to this PC ...
+robocopy "%~dp0." "%LOCALDIR%" /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XD drivers logs /XF inspection-log.csv PC-Inspection.exe pending-uploads.txt uploaded.txt >nul
 if errorlevel 8 goto :copyfail
-if exist "%~dp0pending-uploads.txt" type "%~dp0pending-uploads.txt" >> "%LOCALDIR%\pending-uploads.txt"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PCI_TMP%\Prepare-Local.ps1" -UsbRoot "%~dp0." -LocalDir "%LOCALDIR%"
+if errorlevel 3 goto :prepfail
+rmdir /s /q "%PCI_TMP%" >nul 2>&1
 echo.
 echo =============================================================
 echo   Copied to this PC. You can REMOVE THE FLASH DISK now -
@@ -34,26 +41,30 @@ echo   the inspection keeps running from this PC.
 echo =============================================================
 rem No "call": control moves to the local copy for good.
 "%LOCALDIR%\PC-Inspection.bat" -UsbRoot "%~dp0." %*
+exit /b
 :copyfail
 echo Copy to %LOCALDIR% failed.
 pause
 exit /b 1
+:prepfail
+pause
+exit /b 3
+
 :local
-cd /d "%LOCALDIR%"
-set "BATFILE=%~f0"
-set "PCI_TMP=%TEMP%\pc-inspection-%RANDOM%%RANDOM%"
-mkdir "%PCI_TMP%" >nul 2>&1
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=[IO.File]::ReadAllText($env:BATFILE); $p=[regex]::Split($t,'(?m)^#==FILE:(.+?)==\r?$'); for($i=1;$i -lt $p.Count;$i+=2){[IO.File]::WriteAllText((Join-Path $env:PCI_TMP $p[$i].Trim()),$p[$i+1],(New-Object Text.UTF8Encoding $true))}"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PCI_TMP%\Inspect-PC.ps1" -FlashRoot "%~dp0." %*
 set "RC=%ERRORLEVEL%"
 rmdir /s /q "%PCI_TMP%" >nul 2>&1
 echo.
 pause
 exit /b %RC%
+
+:extract
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=[IO.File]::ReadAllText($env:BATFILE); $p=[regex]::Split($t,'(?m)^#==FILE:(.+?)==\r?$'); for($i=1;$i -lt $p.Count;$i+=2){[IO.File]::WriteAllText((Join-Path $env:PCI_TMP $p[$i].Trim()),$p[$i+1],(New-Object Text.UTF8Encoding $true))}"
+exit /b 0
 """.replace("%VERSION%", version)
 
 parts = [header]
-for name in ("Inspect-PC.ps1", "Setup-Network.ps1"):
+for name in ("Inspect-PC.ps1", "Setup-Network.ps1", "Prepare-Local.ps1"):
     body = (root / "scripts" / name).read_text(encoding="utf-8-sig")
     parts.append(f"#==FILE:{name}==\n{body}\n")
 

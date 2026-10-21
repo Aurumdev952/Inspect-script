@@ -29,6 +29,18 @@ var HEADER_ROW = [
 ];
 
 function doPost(e) {
+  // One upload at a time: two requests can't both pass the duplicate check
+  // and then both append the same serial number.
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    return handlePost_(e);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handlePost_(e) {
   var sheet = getTargetSheet_();
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(HEADER_ROW);
@@ -68,6 +80,29 @@ function getTargetSheet_() {
     }
   }
   return ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);
+}
+
+/**
+ * One-time clean-up: run this from the Apps Script editor (select
+ * removeDuplicateInspections in the function list, then Run). Keeps the first
+ * row of every serial number and deletes the later ones.
+ * Check the Execution log afterwards: it lists what was deleted.
+ */
+function removeDuplicateInspections() {
+  var sheet = getTargetSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 3) return;
+  var serialCol = COLUMNS.indexOf('serialNumber') + 1;
+  var serials = sheet.getRange(2, serialCol, lastRow - 1, 1).getValues();
+  var seen = {};
+  var toDelete = [];
+  for (var i = 0; i < serials.length; i++) {
+    var key = String(serials[i][0]).trim();
+    if (!key) continue;
+    if (seen[key]) toDelete.push(i + 2); else seen[key] = true;
+  }
+  for (var j = toDelete.length - 1; j >= 0; j--) sheet.deleteRow(toDelete[j]);
+  Logger.log('Deleted %s duplicate row(s): %s', toDelete.length, toDelete.join(', '));
 }
 
 // Returns {row, timestamp, inspector} for the first existing row with this

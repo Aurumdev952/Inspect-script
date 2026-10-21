@@ -3,7 +3,7 @@
 Double-click `PC-Inspection.exe` on a flash disk and it:
 
 1. Asks for admin rights (needed to install drivers and add Wi-Fi).
-1. Copies itself, `config.json` and the drivers to `C:\ProgramData\PC-Inspection`
+1. Copies itself and `config.json` - plus only the Wi-Fi driver this PC needs - to `C:\ProgramData\PC-Inspection`
    and continues from there - **the flash disk can be removed right away**
    and taken to the next PC. Results are copied back to the flash disk at
    the end if it is still plugged in.
@@ -37,9 +37,8 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
 | `Inspectors` | List of inspector names shown as a numbered menu, e.g. `["Hugues", "Vanessa"]`. Empty = type the name. |
 | `WifiNetworks` | List of `{ "Ssid", "Password", "Security" }`. Security: `WPA2PSK` (default), `WPA3SAE`, `WPAPSK`, `OPEN`. Add `"Hidden": true` for hidden networks. Tried in order. |
 | `DriverPackages` | Network driver links: `Name`, `Url`, `Type` (`zip`, `exe`, `msi`, `inf`, `cab`), optional `SilentArgs` (for `exe`), optional `MatchHardwareIds` (e.g. `VEN_8086` Intel, `VEN_10EC` Realtek, `VEN_14C3` MediaTek, `VEN_17CB` Qualcomm) |
-| `InstallAllDrivers` | `true` (default) = install every driver in `drivers\` on every PC. `false` = only when Wi-Fi is broken |
 | `RequireWifi` | `true` = PC fails if it has no working Wi-Fi card/driver |
-| `CacheDriversWhenOnline` | `true` = when a PC is online, download all driver links into `drivers\downloads\` so later PCs work offline |
+| `TimeZoneOffsetHours` | Hours added to UTC for the time saved in the Sheet. `2` = Rwanda (the PCs' own time zone is often wrong) |
 
 3. The Wi-Fi drivers (Intel + Realtek, from the team's WifiDrivers pack)
    are already in `drivers\` in the zip - nothing to copy. Add more driver folders (with `.inf`
@@ -66,10 +65,13 @@ One-time setup, done by the Sheet owner:
    **Anyone**. Copy the URL.
 5. Put that URL in `WebhookUrl` in `config.json` on the flash disk.
 
-After that every PC uploads its row by itself. If a PC has no internet, the
-row waits in `pending-uploads.txt` on the flash disk and is sent
-automatically by the next PC that is online. The same serial number is
-never saved twice.
+After that every PC uploads its own row, **once**. Nothing is queued or
+re-sent by other PCs, so old failed uploads can never come back as
+duplicates. If a PC could not upload (no internet), its row is in
+`inspection-log.csv` with `uploadStatus = failed`: run the inspection on that
+PC again when it is online. The Sheet never saves the same serial number
+twice (and `removeDuplicateInspections()` in `Code.gs` cleans up rows that
+are already duplicated).
 
 After changing `Code.gs`, use **Deploy → Manage deployments → Edit → New
 version** so the URL stays the same.

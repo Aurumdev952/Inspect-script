@@ -55,8 +55,7 @@ jobs:
       - name: Package flash disk zip
         run: |
           cp -r flashdisk/. dist/
-          mkdir -p dist/scripts && cp scripts/*.ps1 dist/scripts/
-          cp Run-Inspection.bat dist/
+          python3 build/make-bat.py "${{ steps.ver.outputs.version }}" dist/PC-Inspection.bat
           cd dist && zip -r ../PC-Inspection-${{ steps.ver.outputs.version }}.zip .
       - uses: actions/upload-artifact@v4
         with:
@@ -64,6 +63,7 @@ jobs:
           path: |
             PC-Inspection-*.zip
             dist/PC-Inspection.exe
+            dist/PC-Inspection.bat
 
   windows-smoke-test:
     needs: build
@@ -114,6 +114,17 @@ jobs:
           if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 2) { throw "Inspection crashed (exit $($p.ExitCode))" }
           if (-not (Test-Path usb\inspection-log.csv)) { throw "inspection-log.csv was not written" }
           Get-Content usb\inspection-log.csv
+      - name: Run the .bat end-to-end (no upload)
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force batusb | Out-Null
+          Copy-Item dist\PC-Inspection.bat batusb\
+          Copy-Item flashdisk\config.json batusb\
+          cmd /c "echo.| batusb\PC-Inspection.bat -Inspector CI-Bat -NoUpload"
+          $row = Import-Csv batusb\inspection-log.csv | Select-Object -Last 1
+          Write-Host "Inspector recorded: $($row.inspector), result: $($row.overallResult)"
+          if ($row.inspector -ne 'CI-Bat') { throw ".bat run did not record a result" }
+          exit 0
       - name: Inspector menu picks a name by number
         shell: powershell
         run: |
@@ -142,6 +153,7 @@ jobs:
           files: |
             PC-Inspection-*.zip
             dist/PC-Inspection.exe
+            dist/PC-Inspection.bat
           body: |
             **Download `PC-Inspection-${{ needs.build.outputs.version }}.zip`**, unzip it to the root of the flash disk, fill in `config.json`, then double-click `PC-Inspection.exe` on each PC.
             See RUNME.txt in the zip for details.

@@ -24,6 +24,7 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
 | `Inspectors` | List of inspector names shown as a numbered menu, e.g. `["Hugues", "Vanessa"]`. Empty = type the name. |
 | `WifiNetworks` | List of `{ "Ssid", "Password", "Security" }`. Security: `WPA2PSK` (default), `WPA3SAE`, `WPAPSK`, `OPEN`. Add `"Hidden": true` for hidden networks. Tried in order. |
 | `DriverPackages` | Network driver links: `Name`, `Url`, `Type` (`zip`, `exe`, `msi`, `inf`, `cab`), optional `SilentArgs` (for `exe`), optional `MatchHardwareIds` (e.g. `VEN_8086` Intel, `VEN_10EC` Realtek, `VEN_14C3` MediaTek, `VEN_17CB` Qualcomm) |
+| `InstallAllDrivers` | `true` (default) = install every driver in `drivers\` on every PC. `false` = only when Wi-Fi is broken |
 | `RequireWifi` | `true` = PC fails if it has no working Wi-Fi card/driver |
 | `CacheDriversWhenOnline` | `true` = when a PC is online, download all driver links into `drivers\downloads\` so later PCs work offline |
 

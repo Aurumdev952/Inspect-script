@@ -12,8 +12,12 @@ Example:
   drivers\Intel-WiFi\Netwtw14.inf
   drivers\Realtek-LAN\rt640x64.inf
 
-PC-Inspection.exe installs every .inf in this folder (and sub-folders)
-when a PC has no working Wi-Fi card. This works with NO internet.
+PC-Inspection.exe installs EVERY .inf in this folder (and all sub-folders)
+on EVERY PC. This works with NO internet. Just copy driver folders in here,
+any layout is fine (e.g. unzip WifiDrivers.zip into this folder).
+Drivers that don't match a PC's hardware are skipped by Windows.
+To install only when Wi-Fi is broken, set "InstallAllDrivers": false
+in config.json.
 
 drivers\downloads\ is filled automatically: when a PC is online, every
 "DriverPackages" link in config.json is downloaded here once, so the next

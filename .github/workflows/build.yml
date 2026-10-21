@@ -89,6 +89,7 @@ jobs:
           New-Item -ItemType Directory -Force usb | Out-Null
           Copy-Item dist\PC-Inspection.exe usb\
           Copy-Item flashdisk\config.json usb\
+          Copy-Item flashdisk\drivers usb\drivers -Recurse
           $p = Start-Process usb\PC-Inspection.exe -ArgumentList '--no-pause','-Inspector','CI-Test','-NoUpload' -NoNewWindow -Wait -PassThru
           Write-Host "Exit code: $($p.ExitCode)"
           # 0 = PASS, 2 = FAIL (expected on a CI VM: no Wi-Fi, not 14th-gen i5)

@@ -8,6 +8,7 @@
   ],
 
   "RequireWifi": true,
+  "InstallAllDrivers": true,
   "CacheDriversWhenOnline": true,
 
   "DriverPackages": [

@@ -140,6 +140,21 @@ jobs:
           }
           if (-not (Test-Path "$local\inspection-log.csv")) { throw "Local copy did not run (no log on this PC)" }
           Write-Host "Ran from local copy: OK"
+          # Every run must leave complete logs, on this PC and on the flash disk
+          $logs = "$local\logs"
+          foreach ($pat in 'launcher.log','usage-log.csv','run-*.txt','detail-*.txt','prepare-*.txt') {
+            if (-not (Get-ChildItem $logs -Filter $pat -ErrorAction SilentlyContinue)) { throw "Missing log on this PC: $pat" }
+          }
+          $l = Get-Content "$logs\launcher.log" -Raw
+          if ($l -notmatch 'START version=' -or $l -notmatch 'EXIT code=' -or $l -notmatch 'inspection script ended') { throw "launcher.log is incomplete" }
+          $u = Import-Csv "$logs\usage-log.csv" | Select-Object -Last 1
+          Write-Host "usage-log: $($u.runId) $($u.toolVersion) $($u.inspector) $($u.overallResult) exit=$($u.exitCode) $($u.seconds)s"
+          if ($u.inspector -ne 'CI-Test' -or -not $u.logFile -or $u.toolVersion -eq 'dev') { throw "usage-log row is wrong" }
+          if (Select-String -Path "$logs\*" -Pattern 'YOUR-WIFI-PASSWORD' -Quiet) { throw "A Wi-Fi password leaked into the logs" }
+          foreach ($f in "$usb\logs\usage-log.csv", "$usb\logs\$env:COMPUTERNAME\launcher.log") {
+            if (-not (Test-Path $f)) { throw "Logs were not copied to the flash disk: $f" }
+          }
+          Write-Host "Logs kept on the PC and copied to the flash disk: OK"
       - name: Only the matching driver is copied; damaged files are caught
         shell: powershell
         run: |
@@ -221,6 +236,18 @@ jobs:
           if ((Get-ChildItem "$PWD\pc3" -Filter 'pending*' -ErrorAction SilentlyContinue)) { throw "Nothing may be queued for later" }
           if (-not (Get-ChildItem "$PWD\pc3\logs" -Filter 'run-*.txt')) { throw "Run log was not written" }
           Write-Host "Upload logic OK"
+          exit 0
+      - name: Early failures are logged too
+        shell: powershell
+        run: |
+          $d = "$PWD\crash"; New-Item -ItemType Directory -Force $d | Out-Null
+          '{ this is not json' | Set-Content "$d\config.json"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Inspect-PC.ps1 -FlashRoot $d -SkipNetwork -NoUpload -Inspector X | Out-Null
+          if ($LASTEXITCODE -ne 1) { throw "Expected exit code 1, got $LASTEXITCODE" }
+          $u = Import-Csv "$d\logs\usage-log.csv" | Select-Object -Last 1
+          Write-Host "usage-log: $($u.overallResult) exit=$($u.exitCode)"
+          if ($u.overallResult -ne 'config-error') { throw "Invalid config was not logged" }
+          if (-not (Get-ChildItem "$d\logs" -Filter 'detail-*.txt')) { throw "No detail log" }
           exit 0
       - name: Finishes when the flash disk was removed
         shell: powershell

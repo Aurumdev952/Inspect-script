@@ -76,6 +76,24 @@ are already duplicated).
 After changing `Code.gs`, use **Deploy → Manage deployments → Edit → New
 version** so the URL stays the same.
 
+## Logs (kept for debugging)
+
+Every run is logged and nothing is ever deleted automatically. On each PC, in
+`C:\ProgramData\PC-Inspection\logs\`:
+
+| File | What it holds |
+|---|---|
+| `usage-log.csv` | One line per run: when, tool version, computer, serial, inspector, result, upload status, Wi-Fi, seconds, exit code |
+| `run-<time>-<computer>.txt` | Exactly what was shown on screen |
+| `detail-<time>-<computer>.txt` | Technical detail: driver install output, `netsh` output, devices without a driver, errors with stack traces |
+| `prepare-…` / `detail-prepare-…` | The driver-copy step (runs while the flash disk is plugged in) |
+| `launcher.log` | Every start/exit of the exe or .bat, with exit codes |
+
+If the flash disk is still plugged in at the end, all of this is also copied to
+`logs\` on the flash disk (`logs\usage-log.csv` = every run of every PC, and
+a folder per computer). If it was removed early, run `COLLECT-LOGS.bat` from the
+flash disk on that PC later. Wi-Fi passwords are never written to the logs.
+
 ## Build / release
 
 - Every push builds the exe on GitHub Actions and runs it on a Windows VM.

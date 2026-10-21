@@ -12,7 +12,32 @@
 
 function Get-AllProblemDevices {
     # Informational only (goes to the run log): every device Windows could not start.
-    try { return @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop | Where-Object { $_.ConfigManagerErrorCode -ne 0 }) } catch { return @() }
+    try {
+        $all = @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop | Where-Object { $_.ConfigManagerErrorCode -ne 0 })
+        foreach ($d in $all) { Write-DetailLog "Device without working driver: '$($d.Name)' code=$($d.ConfigManagerErrorCode) id=$($d.PNPDeviceID)" }
+        return $all
+    } catch {
+        Write-DetailLog "Get-AllProblemDevices failed: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+# ---- run logging -----------------------------------------------------
+# Every run keeps: a console transcript (run-*.txt), a detail log with the
+# technical output (detail-*.txt: pnputil, netsh, errors, device lists) and
+# a line in usage-log.csv. Nothing is ever deleted automatically.
+$script:DetailLogPath = $null
+$script:TzOffsetHours = 2    # Rwanda (CAT); overridden by config.json TimeZoneOffsetHours
+
+function Get-CatTime { return [DateTime]::UtcNow.AddHours($script:TzOffsetHours) }
+
+function Write-DetailLog {
+    param([string]$Message)
+    if (-not $script:DetailLogPath) { return }
+    try {
+        $stamp = (Get-CatTime).ToString('HH:mm:ss')
+        Add-Content -Path $script:DetailLogPath -Value "[$stamp] $Message" -Encoding UTF8
+    } catch {}
 }
 
 function Test-InternetConnection {
@@ -24,6 +49,7 @@ function Test-InternetConnection {
             -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
         return ($r.Content -like 'Microsoft Connect Test*')
     } catch {
+        Write-DetailLog "Internet check failed: $($_.Exception.Message)"
         return $false
     }
 }
@@ -37,6 +63,7 @@ function Get-WifiAdapter {
             $_.InterfaceDescription -match 'Wi-?Fi|Wireless|WLAN|802\.11'
         } | Select-Object -First 1
     } catch {
+        Write-DetailLog "Get-WifiAdapter failed: $($_.Exception.Message)"
         return $null
     }
 }
@@ -72,6 +99,8 @@ function Install-InfFolder {
     if (-not $infs) { return $false }
     Write-Host "    Installing Wi-Fi driver ($($infs.Count) package(s)) ..." -ForegroundColor DarkGray
     $out = & pnputil.exe /add-driver (Join-Path $Folder '*.inf') /subdirs /install 2>&1
+    Write-DetailLog "pnputil /add-driver $Folder output:"
+    foreach ($line in @($out)) { Write-DetailLog "  $line" }
     $script:DriverInstallFailures += @($out | Where-Object { "$_" -match 'Failed to add' } | ForEach-Object { "$_".Trim() })
     return $true
 }
@@ -269,6 +298,7 @@ $keyXml
     try {
         $xml | Out-File -FilePath $file -Encoding UTF8
         $out = & netsh.exe wlan add profile filename="$file" user=all 2>&1
+        Write-DetailLog "netsh wlan add profile '$ssid': exit=$LASTEXITCODE $($out -join ' ')"
         return ($LASTEXITCODE -eq 0)
     } finally {
         Remove-Item $file -Force -ErrorAction SilentlyContinue
@@ -299,7 +329,8 @@ function Connect-Wifi {
     if (Test-InternetConnection -TimeoutSec 3) { return (Get-ConnectedSsid) }
 
     foreach ($net in $usable) {
-        & netsh.exe wlan connect name="$($net.Ssid)" 2>&1 | Out-Null
+        $conn = & netsh.exe wlan connect name="$($net.Ssid)" 2>&1
+        Write-DetailLog "netsh wlan connect '$($net.Ssid)': $($conn -join ' ')"
         $deadline = (Get-Date).AddSeconds($WaitSec)
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 1
@@ -327,6 +358,7 @@ function Invoke-NetworkSetup {
 
     Write-Host "`n[1/3] Network drivers & Wi-Fi" -ForegroundColor Cyan
     Start-WlanService
+    try { Write-DetailLog ("Network adapters at start:`r`n" + ((Get-NetAdapter -Physical -ErrorAction Stop | Format-Table Name, InterfaceDescription, Status, PhysicalMediaType, DriverVersion -AutoSize | Out-String).Trim())) } catch { Write-DetailLog "Get-NetAdapter failed: $($_.Exception.Message)" }
 
     $adapter  = Get-WifiAdapter
     $problems = @(Get-ProblemNetworkDevices)
@@ -359,6 +391,7 @@ function Invoke-NetworkSetup {
         Write-Host ("  {0,-12}: {1}" -f 'Net drivers', $result.networkDriverStatus) -ForegroundColor Red
         foreach ($f in ($script:DriverInstallFailures | Select-Object -First 3)) { Write-Host "    $f" -ForegroundColor DarkGray }
     }
+    try { Write-DetailLog ("Network adapters at end:`r`n" + ((Get-NetAdapter -Physical -ErrorAction Stop | Format-Table Name, InterfaceDescription, Status, PhysicalMediaType, DriverVersion -AutoSize | Out-String).Trim())) } catch {}
     $others = @(Get-AllProblemDevices)
     if ($adapter -and $others.Count -gt 0) {
         Write-Host ("  (other devices without a driver, not needed here: {0})" -f (($others | ForEach-Object { $_.Name } | Select-Object -Unique) -join ', ')) -ForegroundColor DarkGray

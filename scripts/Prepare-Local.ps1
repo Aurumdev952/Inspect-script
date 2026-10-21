@@ -23,6 +23,19 @@ $ProgressPreference = 'SilentlyContinue'
 
 # [IO.Path] calls: they don't care whether the drive letter exists.
 # GetFullPath also turns "E:\PC-Inspection\." into "E:\PC-Inspection".
+# Own log files in the PC's logs folder (kept forever, see Inspect-PC.ps1)
+$logsDir = [IO.Path]::Combine([IO.Path]::GetFullPath($LocalDir), 'logs')
+$prepId  = "{0:yyyyMMdd-HHmmss}-{1}" -f (Get-CatTime), $env:COMPUTERNAME
+$script:DetailLogPath = Join-Path $logsDir "detail-prepare-$prepId.txt"
+try { New-Item -ItemType Directory -Force -Path $logsDir | Out-Null; Start-Transcript -Path (Join-Path $logsDir "prepare-$prepId.txt") -Force | Out-Null } catch {}
+function Done([int]$Code) { try { Stop-Transcript | Out-Null } catch {}; exit $Code }
+trap {
+    Write-Host "  Preparing failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-DetailLog ("PREPARE ERROR: " + $_.Exception.ToString() + "`r`n" + $_.ScriptStackTrace)
+    Done 1
+}
+Write-DetailLog "PREPARE START usb=$UsbRoot local=$LocalDir allDrivers=$AllDrivers"
+
 $usbDrivers   = [IO.Path]::GetFullPath([IO.Path]::Combine($UsbRoot, 'drivers'))
 $localDrivers = [IO.Path]::GetFullPath([IO.Path]::Combine($LocalDir, 'drivers'))
 
@@ -74,7 +87,7 @@ function Test-CopiedDriver {
     return $bad
 }
 
-if (-not [IO.Directory]::Exists($usbDrivers)) { exit 0 }
+if (-not [IO.Directory]::Exists($usbDrivers)) { Write-DetailLog 'No drivers folder on the flash disk'; Done 0 }
 
 # What does this PC need?
 if ($AllDrivers) {
@@ -83,9 +96,10 @@ if ($AllDrivers) {
     if (-not $HardwareIds) {
         $adapter  = Get-WifiAdapter
         $problems = @(Get-ProblemNetworkDevices)
-        if ($adapter) { Write-Host "  Wi-Fi driver already installed on this PC - no drivers to copy." -ForegroundColor DarkGray; exit 0 }
+        if ($adapter) { Write-Host "  Wi-Fi driver already installed on this PC - no drivers to copy." -ForegroundColor DarkGray; Write-DetailLog "Wi-Fi adapter already works: $($adapter.InterfaceDescription)"; Done 0 }
         $HardwareIds = @($problems | ForEach-Object { $_.HardwareID })
     }
+    Write-DetailLog ("Hardware IDs of devices needing a driver: " + ($HardwareIds -join ' | '))
     $keys = Get-DriverKeys $HardwareIds
     $reason = if ($keys.Count) { "Wi-Fi card " + ($keys -join ', ') } else { 'Wi-Fi card not recognised, copying all drivers' }
 }
@@ -93,10 +107,12 @@ if ($AllDrivers) {
 $folders = @(Find-DriverFolders -Root $usbDrivers -Keys $keys)
 if (-not $folders.Count) {
     Write-Host "  No driver on the flash disk matches this PC ($reason)." -ForegroundColor Yellow
-    exit 0
+    Write-DetailLog "No matching driver folder for keys: $($keys -join ', ')"
+    Done 0
 }
 
 Write-Host "  Copying the Wi-Fi driver for this PC ($reason) ..." -ForegroundColor DarkGray
+Write-DetailLog ("Matching driver folders: " + (($folders | ForEach-Object { Split-Path $_ -Leaf }) -join ', '))
 $hashes = @{}
 $sumFile = Join-Path $usbDrivers 'checksums.sha256'
 if ([IO.File]::Exists($sumFile)) {
@@ -116,7 +132,9 @@ if ($damaged.Count) {
     Write-Host "  $($damaged.Count) driver file(s) on the flash disk are DAMAGED:" -ForegroundColor Red
     $damaged | Select-Object -First 4 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
     Write-Host "  Fix: copy the PC-Inspection folder to the flash disk again, then use 'Eject' before unplugging." -ForegroundColor Yellow
-    exit 3
+    Write-DetailLog ("DAMAGED driver files: " + ($damaged -join ', '))
+    Done 3
 }
 if ($hashes.Count) { Write-Host "  Driver files checked: OK" -ForegroundColor DarkGray }
-exit 0
+Write-DetailLog 'PREPARE END ok'
+Done 0

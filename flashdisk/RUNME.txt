@@ -38,3 +38,10 @@ IF PC-Inspection.exe SHOWS 0 KB OR DISAPPEARS:
 
 IF WINDOWS SAYS "Windows protected your PC":
   Click "More info" -> "Run anyway". (The exe is not code-signed.)
+
+LOGS (for debugging):
+  Every run is logged in C:\ProgramData\PC-Inspection\logs on that PC and,
+  if the flash disk is still plugged in at the end, in the logs folder on
+  the flash disk (logs\usage-log.csv lists every run of every PC).
+  Flash disk removed early? Plug it in again on that PC and double-click
+  COLLECT-LOGS.bat. When something looks wrong, send the logs folder.

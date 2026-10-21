@@ -22,6 +22,8 @@ set "BATFILE=%~f0"
 set "PCI_TMP=%TEMP%\pc-inspection-%RANDOM%%RANDOM%"
 set "LOCALDIR=%ProgramData%\PC-Inspection"
 mkdir "%PCI_TMP%" >nul 2>&1
+if not exist "%LOCALDIR%\logs" mkdir "%LOCALDIR%\logs" >nul 2>&1
+echo [%date% %time%] BAT START %VERSION% from "%~dp0" args: %* >> "%LOCALDIR%\logs\launcher.log"
 call :extract
 rem Plain gotos, no ( ) blocks: a folder name with brackets would break them.
 if /i "%~dp0"=="%LOCALDIR%\" goto :local
@@ -33,6 +35,7 @@ robocopy "%~dp0." "%LOCALDIR%" /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XD drivers 
 if errorlevel 8 goto :copyfail
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PCI_TMP%\Prepare-Local.ps1" -UsbRoot "%~dp0." -LocalDir "%LOCALDIR%"
 if errorlevel 3 goto :prepfail
+echo [%date% %time%] BAT prepared the driver, continuing from this PC >> "%LOCALDIR%\logs\launcher.log"
 rmdir /s /q "%PCI_TMP%" >nul 2>&1
 echo.
 echo =============================================================
@@ -43,16 +46,19 @@ rem No "call": control moves to the local copy for good.
 "%LOCALDIR%\PC-Inspection.bat" -UsbRoot "%~dp0." %*
 exit /b
 :copyfail
+echo [%date% %time%] BAT copy to this PC failed >> "%LOCALDIR%\logs\launcher.log"
 echo Copy to %LOCALDIR% failed.
 pause
 exit /b 1
 :prepfail
+echo [%date% %time%] BAT driver preparation failed (damaged files on the flash disk) >> "%LOCALDIR%\logs\launcher.log"
 pause
 exit /b 3
 
 :local
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PCI_TMP%\Inspect-PC.ps1" -FlashRoot "%~dp0." %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PCI_TMP%\Inspect-PC.ps1" -FlashRoot "%~dp0." -ToolVersion "%VERSION%" %*
 set "RC=%ERRORLEVEL%"
+echo [%date% %time%] BAT inspection script ended with exit code %RC% >> "%LOCALDIR%\logs\launcher.log"
 rmdir /s /q "%PCI_TMP%" >nul 2>&1
 echo.
 pause

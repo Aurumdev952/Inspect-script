@@ -41,8 +41,17 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "release=$rel" >> "$GITHUB_OUTPUT"
+      - name: Add icon, version info and admin manifest
+        # A normal Windows manifest + version info (instead of a bare
+        # binary) makes antivirus far less likely to flag the exe.
+        run: |
+          go install github.com/tc-hib/go-winres@v0.3.3
+          v="${{ steps.ver.outputs.version }}"; v="${v#v}"; [[ "$v" =~ ^[0-9.]+$ ]] || v="0.0.0"
+          "$(go env GOPATH)/bin/go-winres" simply --arch amd64 --manifest cli --admin \
+            --product-name "PC Inspection" --file-description "PC Inspection tool" \
+            --original-filename PC-Inspection.exe --product-version "$v" --file-version "$v"
       - name: Build PC-Inspection.exe
-        run: GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" -o dist/PC-Inspection.exe .
+        run: GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-X main.version=${{ steps.ver.outputs.version }}" -o dist/PC-Inspection.exe .
       - name: Package flash disk zip
         run: |
           cp -r flashdisk/. dist/
@@ -73,6 +82,15 @@ jobs:
             if ($errors) { $errors | Format-List; throw "Syntax errors in $($f.Name)" }
             Write-Host "OK: $($f.Name)"
           }
+      - name: Windows Defender scan of the exe
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          & $mp -SignatureUpdate | Out-Null
+          & $mp -Scan -ScanType 3 -File "$PWD\dist\PC-Inspection.exe" -DisableRemediation
+          Write-Host "MpCmdRun exit code: $LASTEXITCODE (0 = clean, 2 = threat found)"
+          exit $LASTEXITCODE
       - name: Bundled drivers are accepted by Windows
         shell: powershell
         run: |

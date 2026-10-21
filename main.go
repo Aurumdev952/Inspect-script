@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -36,6 +37,31 @@ import (
 var scripts embed.FS
 
 var version = "dev"
+
+// launcherLog is the always-on log of this launcher (every start, every
+// step, every exit code). It lives on the PC and is never deleted:
+// C:\ProgramData\PC-Inspection\logs\launcher.log
+var launcherLog *os.File
+
+func openLauncherLog() {
+	dir := filepath.Join(localDir(), "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "launcher.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err == nil {
+		launcherLog = f
+	}
+}
+
+// logf writes one timestamped line (Rwanda time, UTC+2) to the launcher log.
+func logf(format string, a ...any) {
+	if launcherLog == nil {
+		return
+	}
+	stamp := time.Now().UTC().Add(2 * time.Hour).Format("2006-01-02 15:04:05")
+	fmt.Fprintf(launcherLog, "[%s CAT] pid=%d %s\n", stamp, os.Getpid(), fmt.Sprintf(format, a...))
+}
 
 func main() {
 	args := os.Args[1:]
@@ -59,7 +85,12 @@ func main() {
 		}
 	}
 
+	openLauncherLog()
+	if exe, err := os.Executable(); err == nil {
+		logf("START version=%s exe=%s args=%q", version, exe, args)
+	}
 	code, pause := run(args, psArgs, opt)
+	logf("EXIT code=%d", code)
 	if pause && !opt.noPause {
 		fmt.Print("\nPress Enter to close this window...")
 		bufio.NewReader(os.Stdin).ReadString('\n')
@@ -95,7 +126,9 @@ func run(allArgs, psArgs []string, opt options) (int, bool) {
 
 	if !isAdmin() {
 		fmt.Println("Asking for administrator rights (click Yes)...")
+		logf("not elevated, asking for administrator rights")
 		if err := relaunchAsAdmin(exe, allArgs, root); err != nil {
+			logf("administrator rights refused: %v", err)
 			fmt.Println("Could not get administrator rights:", err)
 			fmt.Println("Right-click PC-Inspection.exe and choose 'Run as administrator'.")
 			return 1, true
@@ -120,6 +153,7 @@ func run(allArgs, psArgs []string, opt options) (int, bool) {
 		}
 	}
 
+	logf("elevated, running from %s", root)
 	local := localDir()
 	if !opt.noRelocate && !strings.EqualFold(filepath.Clean(root), filepath.Clean(local)) {
 		return relocate(exe, root, local, tmp, psArgs, opt)
@@ -130,6 +164,7 @@ func run(allArgs, psArgs []string, opt options) (int, bool) {
 		"-NoProfile", "-ExecutionPolicy", "Bypass",
 		"-File", filepath.Join(tmp, "Inspect-PC.ps1"),
 		"-FlashRoot", root,
+		"-ToolVersion", version,
 	}
 	if opt.usbRoot != "" {
 		cmdArgs = append(cmdArgs, "-UsbRoot", opt.usbRoot)
@@ -137,14 +172,18 @@ func run(allArgs, psArgs []string, opt options) (int, bool) {
 	cmd := exec.Command(ps, append(cmdArgs, psArgs...)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Dir = root
+	logf("starting inspection script (flashRoot=%s usbRoot=%q)", root, opt.usbRoot)
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			// 2 = inspection ran fine but the PC FAILED the spec.
+			logf("inspection script ended with exit code %d", ee.ExitCode())
 			return ee.ExitCode(), true
 		}
+		logf("could not start PowerShell: %v", err)
 		fmt.Println("Could not start PowerShell:", err)
 		return 1, true
 	}
+	logf("inspection script ended with exit code 0")
 	return 0, true
 }
 
@@ -163,6 +202,7 @@ func powershellPath() string {
 // keeps the flash disk busy after that.
 func relocate(exe, usb, local, scriptsDir string, psArgs []string, opt options) (int, bool) {
 	fmt.Println("Copying the tool to this PC ...")
+	logf("relocating from %s to %s", usb, local)
 	if err := os.MkdirAll(local, 0o755); err != nil {
 		fmt.Println("Cannot create", local, ":", err)
 		return 1, true
@@ -174,6 +214,7 @@ func relocate(exe, usb, local, scriptsDir string, psArgs []string, opt options) 
 	}
 	for _, c := range copies {
 		if err := copyFile(c.src, c.dst); err != nil && !os.IsNotExist(err) {
+			logf("copy failed %s -> %s: %v", c.src, c.dst, err)
 			fmt.Println("Copy failed:", err)
 			return 1, true
 		}
@@ -182,7 +223,9 @@ func relocate(exe, usb, local, scriptsDir string, psArgs []string, opt options) 
 	prep := exec.Command(powershellPath(), "-NoProfile", "-ExecutionPolicy", "Bypass",
 		"-File", filepath.Join(scriptsDir, "Prepare-Local.ps1"), "-UsbRoot", usb, "-LocalDir", local)
 	prep.Stdin, prep.Stdout, prep.Stderr = os.Stdin, os.Stdout, os.Stderr
+	logf("preparing the driver (Prepare-Local.ps1)")
 	if err := prep.Run(); err != nil {
+		logf("Prepare-Local.ps1 failed: %v", err)
 		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 3 {
 			// Damaged driver files: the script already explained how to fix it.
 			return 3, true
@@ -201,10 +244,12 @@ func relocate(exe, usb, local, scriptsDir string, psArgs []string, opt options) 
 	if opt.noPause {
 		args = append(args, "--no-pause")
 	}
+	logf("starting local copy %s", filepath.Join(local, "PC-Inspection.exe"))
 	child := exec.Command(filepath.Join(local, "PC-Inspection.exe"), args...)
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
 	child.Dir = local
 	if err := child.Start(); err != nil {
+		logf("could not start local copy: %v", err)
 		fmt.Println("Could not start the local copy:", err)
 		return 1, true
 	}

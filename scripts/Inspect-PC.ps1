@@ -28,6 +28,7 @@ param(
     [string]$InspectorCachePath,
     [string]$LogPath,
     [string]$DriversDir,
+    [string]$ToolVersion = 'dev',
     [switch]$SkipNetwork,
     [switch]$NoUpload
 )
@@ -41,12 +42,50 @@ if (-not $DriversDir)         { $DriversDir         = Join-Path $FlashRoot 'driv
 
 $ProgressPreference = 'SilentlyContinue'   # progress bars make web calls and zips much slower
 $runTimer = [Diagnostics.Stopwatch]::StartNew()
+$runStarted = Get-CatTime
 $logsDir  = Join-Path $FlashRoot 'logs'
-$transcriptPath = Join-Path $logsDir ("run-{0:yyyyMMdd-HHmmss}.txt" -f (Get-Date))
+$runId    = "{0:yyyyMMdd-HHmmss}-{1}" -f $runStarted, $env:COMPUTERNAME
+$transcriptPath = Join-Path $logsDir "run-$runId.txt"
+$script:DetailLogPath = Join-Path $logsDir "detail-$runId.txt"
 try {
     New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
     Start-Transcript -Path $transcriptPath -Force | Out-Null
 } catch { $transcriptPath = $null }
+Write-DetailLog ("RUN START id=$runId version=$ToolVersion computer=$env:COMPUTERNAME user=$env:USERNAME flashRoot=$FlashRoot usbRoot=$UsbRoot args: inspector='$Inspector' skipNetwork=$SkipNetwork noUpload=$NoUpload")
+try { Write-DetailLog ("OS: " + (Get-CimInstance Win32_OperatingSystem).Caption + " build " + [Environment]::OSVersion.Version) } catch {}
+
+# --- usage log: one line per run (kept forever, never cleaned up) ---
+$usageColumns = 'runId','startedCAT','toolVersion','computer','serialNumber','inspector','overallResult','uploadStatus','wifiAdapter','wifiConnected','internetOk','seconds','exitCode','source','logFile'
+$script:UsageWritten = $false
+$script:UsageCtx = @{ serialNumber = ''; inspector = ''; overallResult = ''; uploadStatus = ''; wifiAdapter = ''; wifiConnected = ''; internetOk = '' }
+
+function Write-UsageRow {
+    param([string]$Outcome, [int]$ExitCode)
+    if ($script:UsageWritten) { return }
+    $script:UsageWritten = $true
+    $row = [ordered]@{
+        runId = $runId; startedCAT = $runStarted.ToString('yyyy-MM-dd HH:mm:ss'); toolVersion = $ToolVersion
+        computer = $env:COMPUTERNAME; serialNumber = $script:UsageCtx.serialNumber; inspector = $script:UsageCtx.inspector
+        overallResult = $(if ($script:UsageCtx.overallResult) { $script:UsageCtx.overallResult } else { $Outcome })
+        uploadStatus = $script:UsageCtx.uploadStatus; wifiAdapter = $script:UsageCtx.wifiAdapter
+        wifiConnected = $script:UsageCtx.wifiConnected; internetOk = $script:UsageCtx.internetOk
+        seconds = [int]$runTimer.Elapsed.TotalSeconds; exitCode = $ExitCode
+        source = $(if ($UsbRoot) { 'flash-disk' } else { 'direct' }); logFile = $(if ($transcriptPath) { Split-Path $transcriptPath -Leaf } else { '' })
+    }
+    try { [PSCustomObject]$row | Export-Csv -Path (Join-Path $logsDir 'usage-log.csv') -Append -Force -NoTypeInformation -Encoding UTF8 -ErrorAction Stop } catch {}
+    Write-DetailLog "RUN END outcome=$Outcome exit=$ExitCode seconds=$([int]$runTimer.Elapsed.TotalSeconds)"
+    return [PSCustomObject]$row
+}
+
+# Anything unexpected is written to the logs instead of vanishing with the window.
+trap {
+    Write-Host "  Something unexpected went wrong: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  The details are saved in the run log: $logsDir" -ForegroundColor Yellow
+    Write-DetailLog ("UNEXPECTED ERROR: " + $_.Exception.ToString() + "`r`n" + $_.ScriptStackTrace)
+    [void](Write-UsageRow -Outcome 'crashed' -ExitCode 1)
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 1
+}
 
 function Write-Took {
     param([string]$What, [Diagnostics.Stopwatch]$Watch)
@@ -59,12 +98,17 @@ if (Test-Path $ConfigPath) {
         $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
     } catch {
         Write-Host "config.json is not valid JSON ($($_.Exception.Message)). Fix it and run again." -ForegroundColor Red
+        Write-DetailLog "config.json invalid: $($_.Exception.Message)"
+        [void](Write-UsageRow -Outcome 'config-error' -ExitCode 1)
+        try { Stop-Transcript | Out-Null } catch {}
         exit 1
     }
 } else {
     Write-Host "No config.json found at $ConfigPath - Wi-Fi setup and upload will be skipped." -ForegroundColor Yellow
 }
 if (-not $WebhookUrl) { $WebhookUrl = $config.WebhookUrl }
+if ($null -ne $config.TimeZoneOffsetHours) { $script:TzOffsetHours = [double]$config.TimeZoneOffsetHours }
+Write-DetailLog ("Config: webhook " + $(if ($WebhookUrl) { 'set' } else { 'MISSING' }) + ", inspectors " + @($config.Inspectors).Count + ", wifi networks " + @($config.WifiNetworks).Count + ", requireWifi " + ($config.RequireWifi -ne $false))
 
 # Two slow Windows queries (Windows activation, disk power-on hours) run in
 # the background while the inspector picks a name and the network is set up.
@@ -132,6 +176,9 @@ if (-not $Inspector) {
         try { $Inspector | Out-File -FilePath $InspectorCachePath -Encoding UTF8 -NoNewline } catch {}
     }
 }
+
+$script:UsageCtx.inspector = $Inspector
+Write-DetailLog "Inspector: $Inspector"
 
 # --- Network drivers + Wi-Fi (before the spec checks, so upload works) ---
 $netTimer = [Diagnostics.Stopwatch]::StartNew()
@@ -384,6 +431,13 @@ $record = [ordered]@{
     internetOk        = [bool]$network.internetOk
 }
 
+$script:UsageCtx.serialNumber = $serialNumber
+$script:UsageCtx.overallResult = $overallResult
+$script:UsageCtx.wifiAdapter = $network.wifiAdapter
+$script:UsageCtx.wifiConnected = $network.wifiConnected
+$script:UsageCtx.internetOk = [string][bool]$network.internetOk
+Write-DetailLog "Result: $overallResult serial=$serialNumber notes=$notesText"
+
 # --- Upload to the Google Sheet: once, by this PC, no queue --------------
 # A result is sent a single time. If that fails (no internet...), it is NOT
 # queued and NOT retried by other PCs later: the row stays in
@@ -420,10 +474,12 @@ if ($NoUpload) {
     foreach ($attempt in 1..2) {
         try {
             $status = Send-InspectionRow $json
+            Write-DetailLog "Upload attempt $attempt answered: $status"
             $uploadStatus = if ($status -eq 'duplicate') { 'already-in-sheet' } else { 'uploaded' }
             break
         } catch {
             $lastError = $_.Exception.Message
+            Write-DetailLog "Upload attempt $attempt failed: $($_.Exception.ToString())"
             if ($attempt -eq 1) { Start-Sleep -Seconds 3 }
         }
     }
@@ -443,6 +499,8 @@ if ($NoUpload) {
 
 # --- Local log (written after the upload, so it shows what really happened) ---
 $record['uploadStatus'] = $uploadStatus
+$script:UsageCtx.uploadStatus = $uploadStatus
+Write-DetailLog "Upload status: $uploadStatus $uploadNote"
 try {
     [PSCustomObject]$record | Export-Csv -Path $LogPath -Append -Force -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
 } catch {
@@ -460,9 +518,12 @@ Write-Host "  $uploadNote" -ForegroundColor $uploadColor
 Write-Host ("  Done in {0:N0} seconds." -f $runTimer.Elapsed.TotalSeconds) -ForegroundColor DarkGray
 Write-Host "==============================================" -ForegroundColor $overallColor
 
-# --- Copy result + logs back to the flash disk, if it is still plugged in ---
+# --- Usage log line + copy result and ALL logs back to the flash disk ---
 # (Plain .NET path calls: Join-Path/Test-Path throw once the flash disk's
-# drive letter is gone.)
+# drive letter is gone. If the flash disk is gone, everything stays on this
+# PC in C:\ProgramData\PC-Inspection\logs - COLLECT-LOGS.bat copies it later.)
+$exitCode = if ($overallPass) { 0 } else { 2 }
+$usageRow = Write-UsageRow -Outcome $overallResult -ExitCode $exitCode
 try { Stop-Transcript | Out-Null } catch {}
 if ($UsbRoot) {
     $usbOk = $false
@@ -473,14 +534,17 @@ if ($UsbRoot) {
             if (Test-Path $InspectorCachePath) { Copy-Item $InspectorCachePath ([IO.Path]::Combine($UsbRoot, 'inspector-name.txt')) -Force }
             $usbLogs = [IO.Path]::Combine($UsbRoot, 'logs')
             [void][IO.Directory]::CreateDirectory($usbLogs)
-            if ($transcriptPath -and (Test-Path $transcriptPath)) { Copy-Item $transcriptPath $usbLogs -Force }
-            Write-Host "  Result also copied to the flash disk." -ForegroundColor DarkGray
+            # every run of every PC in one list ...
+            if ($usageRow) { [PSCustomObject]$usageRow | Export-Csv -Path ([IO.Path]::Combine($usbLogs, 'usage-log.csv')) -Append -Force -NoTypeInformation -Encoding UTF8 }
+            # ... and the full logs of this PC, in a folder per computer
+            & robocopy.exe $logsDir ([IO.Path]::Combine($usbLogs, $env:COMPUTERNAME)) /E /XO /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+            Write-Host "  Result and logs also copied to the flash disk." -ForegroundColor DarkGray
         } catch {
-            Write-Host "  Could not write to the flash disk - result is on this PC: $LogPath" -ForegroundColor DarkGray
+            Write-Host "  Could not write to the flash disk - result and logs are on this PC: $logsDir" -ForegroundColor DarkGray
         }
     } else {
-        Write-Host "  Flash disk removed - result is on this PC: $LogPath" -ForegroundColor DarkGray
+        Write-Host "  Flash disk removed - result and logs are on this PC: $logsDir" -ForegroundColor DarkGray
     }
 }
 
-if ($overallPass) { exit 0 } else { exit 2 }
+exit $exitCode

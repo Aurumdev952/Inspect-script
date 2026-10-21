@@ -56,7 +56,9 @@ jobs:
         run: |
           cp -r flashdisk/. dist/
           python3 build/make-bat.py "${{ steps.ver.outputs.version }}" dist/PC-Inspection.bat
-          cd dist && zip -r ../PC-Inspection-${{ steps.ver.outputs.version }}.zip .
+          # Everything inside ONE folder, so the whole thing is one copy to the flash disk
+          mkdir -p pkg/PC-Inspection && cp -r dist/. pkg/PC-Inspection/
+          cd pkg && zip -r ../PC-Inspection-${{ steps.ver.outputs.version }}.zip PC-Inspection
       - uses: actions/upload-artifact@v4
         with:
           name: PC-Inspection
@@ -104,16 +106,18 @@ jobs:
       - name: Run the exe end-to-end (no upload)
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force usb | Out-Null
-          Copy-Item dist\PC-Inspection.exe usb\
-          Copy-Item flashdisk\config.json usb\
-          Copy-Item flashdisk\drivers usb\drivers -Recurse
-          $p = Start-Process usb\PC-Inspection.exe -ArgumentList '--no-pause','-Inspector','CI-Test','-NoUpload' -NoNewWindow -Wait -PassThru
+          # Test the real release zip: unzip it and run from its single folder
+          Expand-Archive (Get-Item PC-Inspection-*.zip).FullName -DestinationPath flash
+          $top = @(Get-ChildItem flash)
+          if ($top.Count -ne 1 -or $top[0].Name -ne 'PC-Inspection') { throw "zip must contain exactly one folder 'PC-Inspection'" }
+          Get-ChildItem flash\PC-Inspection | Format-Table Name, Length
+          $usb = 'flash\PC-Inspection'
+          $p = Start-Process "$usb\PC-Inspection.exe" -ArgumentList '--no-pause','-Inspector','CI-Test','-NoUpload' -NoNewWindow -Wait -PassThru
           Write-Host "Exit code: $($p.ExitCode)"
           # 0 = PASS, 2 = FAIL (expected on a CI VM: no Wi-Fi, not 14th-gen i5)
           if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 2) { throw "Inspection crashed (exit $($p.ExitCode))" }
-          if (-not (Test-Path usb\inspection-log.csv)) { throw "inspection-log.csv was not written" }
-          Get-Content usb\inspection-log.csv
+          if (-not (Test-Path "$usb\inspection-log.csv")) { throw "inspection-log.csv was not written" }
+          Get-Content "$usb\inspection-log.csv"
       - name: Run the .bat end-to-end (no upload)
         shell: powershell
         run: |

@@ -15,7 +15,16 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
 ## Set up a flash disk
 
 1. Download `PC-Inspection-<version>.zip` from
-   [Releases](../../releases/latest) and unzip it to the **root** of the flash disk.
+   [Releases](../../releases/latest), unzip it, and copy the single
+   `PC-Inspection` folder onto the flash disk. Everything needed is inside it:
+   ```
+   PC-Inspection\
+   ├─ PC-Inspection.exe   <- double-click
+   ├─ PC-Inspection.bat   <- backup if the exe is blocked
+   ├─ config.json
+   ├─ drivers\            (Wi-Fi drivers, included)
+   └─ RUNME.txt
+   ```
 2. Edit `config.json`:
 
 | Field | What to put |
@@ -38,8 +47,8 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
 ## Auto-run when the flash disk is plugged in?
 
 Not possible on stock Windows 7/10/11: Windows blocks AutoRun from USB flash
-disks (it was the main way USB viruses spread). `autorun.inf` only sets the
-drive's name and icon. The inspector double-clicks `PC-Inspection.exe`.
+disks (it was the main way USB viruses spread).
+The inspector double-clicks `PC-Inspection.exe`.
 
 ## Google Sheet (automatic upload)
 

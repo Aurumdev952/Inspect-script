@@ -10,6 +10,11 @@
   PC-Inspection.exe elevates itself before calling this.
 #>
 
+function Get-AllProblemDevices {
+    # Informational only (goes to the run log): every device Windows could not start.
+    try { return @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop | Where-Object { $_.ConfigManagerErrorCode -ne 0 }) } catch { return @() }
+}
+
 function Test-InternetConnection {
     param([int]$TimeoutSec = 4)
     # Microsoft's own connectivity probe - the same URL Windows uses for the
@@ -55,20 +60,19 @@ function Get-ProblemNetworkDevices {
     }
 }
 
+$script:DriverInstallFailures = @()
+
 function Install-InfFolder {
+    # pnputil complaints are only collected here. They are shown to the
+    # inspector only when the Wi-Fi card still doesn't work afterwards
+    # (e.g. a package for other hardware can fail while the right one installs).
     param([string]$Folder)
 
     $infs = Get-ChildItem -Path $Folder -Filter *.inf -Recurse -ErrorAction SilentlyContinue
     if (-not $infs) { return $false }
     Write-Host "    Installing Wi-Fi driver ($($infs.Count) package(s)) ..." -ForegroundColor DarkGray
     $out = & pnputil.exe /add-driver (Join-Path $Folder '*.inf') /subdirs /install 2>&1
-    $added = ($out | Select-String 'Added driver packages:\s*(\d+)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1)
-    $failed = @($out | Where-Object { "$_" -match 'Failed to add' })
-    if ($failed.Count) {
-        Write-Host "    $($failed.Count) driver package(s) could not be added:" -ForegroundColor Yellow
-        $failed | Select-Object -First 3 | ForEach-Object { Write-Host "      $("$_".Trim())" -ForegroundColor DarkGray }
-    }
-    if ($added) { Write-Host "    Driver packages installed: $added" -ForegroundColor DarkGray }
+    $script:DriverInstallFailures += @($out | Where-Object { "$_" -match 'Failed to add' } | ForEach-Object { "$_".Trim() })
     return $true
 }
 
@@ -327,7 +331,7 @@ function Invoke-NetworkSetup {
     $adapter  = Get-WifiAdapter
     $problems = @(Get-ProblemNetworkDevices)
 
-    if ($adapter -and $problems.Count -eq 0) {
+    if ($adapter) {
         Write-Host "    Wi-Fi driver already installed." -ForegroundColor DarkGray
     } else {
         Install-NetworkDrivers -Config $Config -DriversDir $DriversDir
@@ -337,21 +341,27 @@ function Invoke-NetworkSetup {
     }
 
     if ($adapter) {
+        # A working Wi-Fi card is the only thing that decides the network
+        # result. Other devices without drivers (chipset, SM Bus, ...) are
+        # not needed for the inspection and never cause a FAIL.
         $result.wifiAdapter       = $adapter.InterfaceDescription
         $result.wifiDriverVersion = $adapter.DriverVersion
-        Write-Host ("  {0,-12}: {1} (driver {2})" -f 'Wi-Fi card', $adapter.InterfaceDescription, $adapter.DriverVersion) -ForegroundColor Green
-    } else {
-        Write-Host ("  {0,-12}: {1}" -f 'Wi-Fi card', 'NOT FOUND (no driver for it on the flash disk?)') -ForegroundColor Red
-    }
-
-    if ($problems.Count -gt 0) {
-        $result.networkDriverStatus = 'Missing driver: ' + (($problems | ForEach-Object { $_.Name }) -join ', ')
-        Write-Host ("  {0,-12}: {1}" -f 'Net drivers', $result.networkDriverStatus) -ForegroundColor Red
-    } elseif ($adapter) {
         $result.networkDriverStatus = 'OK'
+        Write-Host ("  {0,-12}: {1} (driver {2})" -f 'Wi-Fi card', $adapter.InterfaceDescription, $adapter.DriverVersion) -ForegroundColor Green
         Write-Host ("  {0,-12}: {1}" -f 'Net drivers', 'OK') -ForegroundColor Green
     } else {
-        $result.networkDriverStatus = 'No Wi-Fi adapter found'
+        Write-Host ("  {0,-12}: {1}" -f 'Wi-Fi card', 'NOT FOUND (no driver for it on the flash disk?)') -ForegroundColor Red
+        if ($problems.Count -gt 0) {
+            $result.networkDriverStatus = 'Missing driver: ' + (($problems | ForEach-Object { $_.Name }) -join ', ')
+        } else {
+            $result.networkDriverStatus = 'No Wi-Fi adapter found'
+        }
+        Write-Host ("  {0,-12}: {1}" -f 'Net drivers', $result.networkDriverStatus) -ForegroundColor Red
+        foreach ($f in ($script:DriverInstallFailures | Select-Object -First 3)) { Write-Host "    $f" -ForegroundColor DarkGray }
+    }
+    $others = @(Get-AllProblemDevices)
+    if ($adapter -and $others.Count -gt 0) {
+        Write-Host ("  (other devices without a driver, not needed here: {0})" -f (($others | ForEach-Object { $_.Name } | Select-Object -Unique) -join ', ')) -ForegroundColor DarkGray
     }
 
     $ssid = $null

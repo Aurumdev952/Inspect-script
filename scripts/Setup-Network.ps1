@@ -59,8 +59,12 @@ function Install-InfFolder {
 
     $infs = Get-ChildItem -Path $Folder -Filter *.inf -Recurse -ErrorAction SilentlyContinue
     if (-not $infs) { return $false }
-    Write-Host "    Installing $($infs.Count) driver file(s) from $Folder ..." -ForegroundColor DarkGray
-    & pnputil.exe /add-driver (Join-Path $Folder '*.inf') /subdirs /install | Out-Null
+    Write-Host "    Installing $($infs.Count) driver(s) from $Folder (can take a few minutes) ..." -ForegroundColor DarkGray
+    $out = & pnputil.exe /add-driver (Join-Path $Folder '*.inf') /subdirs /install 2>&1
+    # pnputil's last lines are a summary: "Total driver packages: N",
+    # "Added driver packages: N"
+    $out | Where-Object { "$_" -match 'Total driver packages|Added driver packages|Failed' } |
+        ForEach-Object { Write-Host "    $("$_".Trim())" -ForegroundColor DarkGray }
     return $true
 }
 
@@ -147,13 +151,13 @@ function Test-PackageMatches {
 }
 
 function Install-NetworkDrivers {
-    param($Config, [string]$DriversDir)
+    param($Config, [string]$DriversDir, [switch]$SkipFolder)
 
     $problems = @(Get-ProblemNetworkDevices)
     $cacheDir = Join-Path $DriversDir 'downloads'
 
     # 1) Driver folders copied onto the flash disk (works with no internet)
-    if (Test-Path $DriversDir) {
+    if (-not $SkipFolder -and (Test-Path $DriversDir)) {
         Install-InfFolder $DriversDir | Out-Null
     }
 
@@ -294,13 +298,25 @@ function Invoke-NetworkSetup {
     # Wireless AutoConfig must be running for netsh wlan to work at all
     try { Set-Service WlanSvc -StartupType Automatic -ErrorAction Stop; Start-Service WlanSvc -ErrorAction Stop } catch {}
 
+    # Install every driver in the flash disk's drivers\ folder on every PC
+    # (config.json "InstallAllDrivers": false = only when Wi-Fi is broken).
+    # Drivers that don't match this PC's hardware are just stored, not used.
+    $folderDone = $false
+    if ($Config.InstallAllDrivers -ne $false -and (Test-Path $DriversDir)) {
+        $folderDone = Install-InfFolder $DriversDir
+        if ($folderDone) {
+            & pnputil.exe /scan-devices 2>$null | Out-Null
+            Start-Sleep -Seconds 5
+        }
+    }
+
     $adapter  = Get-WifiAdapter
     $problems = @(Get-ProblemNetworkDevices)
 
     if (-not $adapter -or $problems.Count -gt 0) {
         if (-not $adapter) { Write-Host "    No working Wi-Fi adapter - installing drivers ..." -ForegroundColor Yellow }
         foreach ($p in $problems) { Write-Host "    Missing/broken driver: $($p.Name) [$($p.PNPDeviceID)]" -ForegroundColor Yellow }
-        Install-NetworkDrivers -Config $Config -DriversDir $DriversDir
+        Install-NetworkDrivers -Config $Config -DriversDir $DriversDir -SkipFolder:$folderDone
         try { Start-Service WlanSvc -ErrorAction Stop } catch {}
         $adapter  = Get-WifiAdapter
         $problems = @(Get-ProblemNetworkDevices)

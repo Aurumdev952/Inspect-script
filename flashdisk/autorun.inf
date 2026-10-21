@@ -1,5 +1,0 @@
-[autorun]
-label=PC Inspection
-icon=PC-Inspection.exe
-open=PC-Inspection.exe
-action=Run PC Inspection

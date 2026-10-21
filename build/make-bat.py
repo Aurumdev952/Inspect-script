@@ -18,6 +18,28 @@ if errorlevel 1 (
     powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
+rem Copy everything to this PC and continue from there, so the flash disk
+rem can be removed right away. (Plain gotos, no ( ) blocks: a folder name
+rem with brackets would break them.)
+set "LOCALDIR=%ProgramData%\PC-Inspection"
+if /i "%~dp0"=="%LOCALDIR%\" goto :local
+echo Copying the tool and drivers to this PC ...
+robocopy "%~dp0." "%LOCALDIR%" /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XF inspection-log.csv pending-uploads.txt PC-Inspection.exe >nul
+if errorlevel 8 goto :copyfail
+if exist "%~dp0pending-uploads.txt" type "%~dp0pending-uploads.txt" >> "%LOCALDIR%\pending-uploads.txt"
+echo.
+echo =============================================================
+echo   Copied to this PC. You can REMOVE THE FLASH DISK now -
+echo   the inspection keeps running from this PC.
+echo =============================================================
+rem No "call": control moves to the local copy for good.
+"%LOCALDIR%\PC-Inspection.bat" -UsbRoot "%~dp0." %*
+:copyfail
+echo Copy to %LOCALDIR% failed.
+pause
+exit /b 1
+:local
+cd /d "%LOCALDIR%"
 set "BATFILE=%~f0"
 set "PCI_TMP=%TEMP%\pc-inspection-%RANDOM%%RANDOM%"
 mkdir "%PCI_TMP%" >nul 2>&1

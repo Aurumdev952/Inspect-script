@@ -3,6 +3,10 @@
 Double-click `PC-Inspection.exe` on a flash disk and it:
 
 1. Asks for admin rights (needed to install drivers and add Wi-Fi).
+1. Copies itself, `config.json` and the drivers to `C:\ProgramData\PC-Inspection`
+   and continues from there - **the flash disk can be removed right away**
+   and taken to the next PC. Results are copied back to the flash disk at
+   the end if it is still plugged in.
 2. Asks the inspector's name (remembered on the flash disk; Enter reuses it).
 3. **Network:** if the Wi-Fi card has no working driver, installs drivers from
    `drivers\` on the flash disk, or downloads them from the links in

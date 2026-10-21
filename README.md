@@ -74,4 +74,4 @@ version** so the URL stays the same.
 - `scripts/Inspect-PC.ps1` — the inspection (specs, log, upload).
 - `scripts/Setup-Network.ps1` — drivers + Wi-Fi + internet check.
 - `flashdisk/` — files that go on the flash disk next to the exe.
-- `Run-Inspection.bat` — backup launcher if the exe is blocked.
+- `build/make-bat.py` — builds `PC-Inspection.bat`, a one-file backup of the exe (scripts embedded) for PCs where antivirus blocks the exe.

@@ -12,6 +12,7 @@ ONE-TIME SETUP (on your own PC):
 ON EACH PC:
   1. Plug in the flash disk.
   2. Double-click PC-Inspection.exe  (click "Yes" on the admin prompt)
+     (or PC-Inspection.bat - same thing, use it if the exe is blocked)
   3. Type your name the first time (press Enter next time to reuse it).
   4. Wait for the PASS / FAIL result, then press Enter to close.
 
@@ -29,7 +30,7 @@ IF PC-Inspection.exe SHOWS 0 KB OR DISAPPEARS:
   Windows Defender removed it by mistake (false alarm - the exe is not
   code-signed). Open Windows Security -> Virus & threat protection ->
   Protection history -> pick the item -> Actions -> Allow / Restore.
-  Or use the backup: double-click Run-Inspection.bat (does the same thing).
+  Or use the backup: double-click PC-Inspection.bat (does the same thing).
 
 IF WINDOWS SAYS "Windows protected your PC":
   Click "More info" -> "Run anyway". (The exe is not code-signed.)

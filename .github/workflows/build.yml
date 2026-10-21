@@ -144,19 +144,19 @@ jobs:
           # Realtek RTL8852BE (the card from the real inspections) -> Realtek only
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Prepare-Local.ps1 -UsbRoot $usb -LocalDir "$PWD\prep-realtek" -HardwareIds 'PCI\VEN_10EC&DEV_B852&SUBSYS_8B3D103C&REV_00;PCI\VEN_10EC&DEV_B852&CC_028000'
           if ($LASTEXITCODE -ne 0) { throw "Prepare failed ($LASTEXITCODE)" }
-          $c = Copied "$PWD\prep-realtek"; Write-Host "Realtek card -> copied: $($c -join ', ')"
+          $c = @(Copied "$PWD\prep-realtek"); Write-Host "Realtek card -> copied: $($c -join ', ')"
           if ($c.Count -ne 1 -or $c[0] -ne 'Realtek-WiFi') { throw "Expected only Realtek-WiFi" }
 
           # Intel Wi-Fi 6E (AX210/AX211) -> Intel 6E only
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Prepare-Local.ps1 -UsbRoot $usb -LocalDir "$PWD\prep-intel" -HardwareIds 'PCI\VEN_8086&DEV_2725&SUBSYS_00248086&REV_1A'
           if ($LASTEXITCODE -ne 0) { throw "Prepare failed ($LASTEXITCODE)" }
-          $c = Copied "$PWD\prep-intel"; Write-Host "Intel card -> copied: $($c -join ', ')"
+          $c = @(Copied "$PWD\prep-intel"); Write-Host "Intel card -> copied: $($c -join ', ')"
           if ($c.Count -ne 1 -or $c[0] -ne 'Intel-WiFi-6E') { throw "Expected only Intel-WiFi-6E" }
 
           # A card with no driver on the flash disk -> nothing copied, clear message
           $o = powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Prepare-Local.ps1 -UsbRoot $usb -LocalDir "$PWD\prep-none" -HardwareIds 'PCI\VEN_ABCD&DEV_1234' | Out-String
           Write-Host $o
-          if ((Copied "$PWD\prep-none").Count -ne 0 -or $o -notmatch 'No driver on the flash disk matches') { throw "Unknown card must copy nothing and say so" }
+          if (@(Copied "$PWD\prep-none").Count -ne 0 -or $o -notmatch 'No driver on the flash disk matches') { throw "Unknown card must copy nothing and say so" }
 
           # A damaged driver file on the flash disk is reported (exit code 3)
           Copy-Item $usb dmg -Recurse

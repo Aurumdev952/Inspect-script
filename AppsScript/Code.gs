@@ -84,25 +84,47 @@ function getTargetSheet_() {
 
 /**
  * One-time clean-up: run this from the Apps Script editor (select
- * removeDuplicateInspections in the function list, then Run). Keeps the first
- * row of every serial number and deletes the later ones.
- * Check the Execution log afterwards: it lists what was deleted.
+ * removeDuplicateInspections in the function list, then Run).
+ *
+ * For every serial number that appears more than once it keeps the FIRST row
+ * and deletes a later row only when it is an exact copy (every column equal
+ * except the timestamp and the Wi-Fi columns). A later row that differs in
+ * anything else (e.g. Windows activation changed between two runs) is kept
+ * and listed in the log, so no information is lost.
+ * Check the Execution log afterwards: it lists what was deleted and kept.
  */
 function removeDuplicateInspections() {
   var sheet = getTargetSheet_();
   var lastRow = sheet.getLastRow();
   if (lastRow < 3) return;
-  var serialCol = COLUMNS.indexOf('serialNumber') + 1;
-  var serials = sheet.getRange(2, serialCol, lastRow - 1, 1).getValues();
-  var seen = {};
+  var lastCol = sheet.getLastColumn();
+  var values = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  var serialIdx = COLUMNS.indexOf('serialNumber');
+  var ignore = {};
+  ['timestamp', 'wifiAdapter', 'wifiDriverVersion', 'networkDriverStatus', 'wifiConnected', 'internetOk']
+    .forEach(function (k) { ignore[COLUMNS.indexOf(k)] = true; });
+
+  function sameExceptIgnored(a, b) {
+    for (var c = 0; c < COLUMNS.length; c++) {
+      if (ignore[c]) continue;
+      if (String(a[c]).trim() !== String(b[c]).trim()) return false;
+    }
+    return true;
+  }
+
+  var firstRow = {};   // serial -> index in values
   var toDelete = [];
-  for (var i = 0; i < serials.length; i++) {
-    var key = String(serials[i][0]).trim();
+  var kept = [];
+  for (var i = 0; i < values.length; i++) {
+    var key = String(values[i][serialIdx]).trim();
     if (!key) continue;
-    if (seen[key]) toDelete.push(i + 2); else seen[key] = true;
+    if (firstRow[key] === undefined) { firstRow[key] = i; continue; }
+    if (sameExceptIgnored(values[firstRow[key]], values[i])) toDelete.push(i + 2);
+    else kept.push('row ' + (i + 2) + ' (' + key + ') differs from row ' + (firstRow[key] + 2));
   }
   for (var j = toDelete.length - 1; j >= 0; j--) sheet.deleteRow(toDelete[j]);
-  Logger.log('Deleted %s duplicate row(s): %s', toDelete.length, toDelete.join(', '));
+  Logger.log('Deleted %s exact-copy row(s): %s', toDelete.length, toDelete.join(', '));
+  Logger.log('Kept %s row(s) that differ from the first run: %s', kept.length, kept.join('; '));
 }
 
 // Returns {row, timestamp, inspector} for the first existing row with this

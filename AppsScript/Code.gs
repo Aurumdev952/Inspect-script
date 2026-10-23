@@ -10,7 +10,7 @@ var SHEET_NAME = 'Inspections';
 
 // Optional: write to a specific tab instead of SHEET_NAME. Use the number
 // after "gid=" in the Sheet's URL (e.g. ...edit#gid=418189154 -> 418189154).
-var SHEET_GID = null;
+var SHEET_GID = 418189154;
 
 var COLUMNS = [
   'timestamp', 'inspector', 'serialNumber', 'hostname', 'os', 'osBuild',
@@ -20,12 +20,17 @@ var COLUMNS = [
   'wifiAdapter', 'wifiDriverVersion', 'networkDriverStatus', 'wifiConnected', 'internetOk'
 ];
 
+// Filled in by this script, not sent by the PC: 1 for the first inspection of
+// a serial number in this tab, 2 for the next one, and so on.
+var NUMBER_HEADER = 'Inspection #';
+
 var HEADER_ROW = [
   'Timestamp', 'Inspector', 'Serial Number', 'Hostname', 'OS', 'OS Build',
   'Activation Status', 'CPU Model', 'CPU Spec Status', 'RAM (GB)', 'RAM Spec Status',
   'Disk (GB)', 'Disk Spec Status', 'Disk Media Type', 'Disk Type Status',
   'Condition (New?)', 'Disk Power-On Hours', 'Overall Result', 'Notes',
-  'Wi-Fi Adapter', 'Wi-Fi Driver Version', 'Network Driver Status', 'Wi-Fi Connected', 'Internet OK'
+  'Wi-Fi Adapter', 'Wi-Fi Driver Version', 'Network Driver Status', 'Wi-Fi Connected', 'Internet OK',
+  NUMBER_HEADER
 ];
 
 function doPost(e) {
@@ -50,24 +55,29 @@ function handlePost_(e) {
   }
 
   var data = JSON.parse(e.postData.contents);
-  var serialCol = COLUMNS.indexOf('serialNumber') + 1;
-  var existing = findExistingInspection_(sheet, serialCol, data.serialNumber);
+  var found = findInspections_(sheet, data.serialNumber, data.timestamp);
 
-  if (existing) {
+  // Every inspection is its own row, so a PC inspected again (for example
+  // after a Wi-Fi card was added) keeps its earlier rows. The only thing
+  // refused is the very same inspection arriving twice (same serial number
+  // AND same timestamp), e.g. when the answer to an upload got lost and the
+  // PC sent it again.
+  if (found.sameRun) {
     return ContentService
       .createTextOutput(JSON.stringify({
         status: 'duplicate',
-        message: 'Serial number ' + data.serialNumber + ' was already inspected on ' +
-          existing.timestamp + ' by ' + existing.inspector + '. Not saved again.'
+        message: 'Serial number ' + data.serialNumber + ' was already saved for this inspection (' +
+          found.sameRun.timestamp + ' by ' + found.sameRun.inspector + ').'
       }))
       .setMimeType(ContentService.MimeType.JSON);
   }
 
   var row = COLUMNS.map(function (key) { return data[key] !== undefined ? data[key] : ''; });
+  row.push(found.count + 1);
   sheet.appendRow(row);
 
   return ContentService
-    .createTextOutput(JSON.stringify({ status: 'ok' }))
+    .createTextOutput(JSON.stringify({ status: 'ok', inspectionNumber: found.count + 1 }))
     .setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -82,72 +92,35 @@ function getTargetSheet_() {
   return ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);
 }
 
-/**
- * One-time clean-up: run this from the Apps Script editor (select
- * removeDuplicateInspections in the function list, then Run).
- *
- * For every serial number that appears more than once it keeps the FIRST row
- * and deletes a later row only when it is an exact copy (every column equal
- * except the timestamp and the Wi-Fi columns). A later row that differs in
- * anything else (e.g. Windows activation changed between two runs) is kept
- * and listed in the log, so no information is lost.
- * Check the Execution log afterwards: it lists what was deleted and kept.
- */
-function removeDuplicateInspections() {
-  var sheet = getTargetSheet_();
+// Looks only at this tab. Returns how many rows already have this serial
+// number, and the row that is the very same inspection (same serial number
+// and same timestamp), if any.
+function findInspections_(sheet, serialNumber, timestamp) {
+  var result = { count: 0, sameRun: null };
+  var serial = String(serialNumber || '').trim();
   var lastRow = sheet.getLastRow();
-  if (lastRow < 3) return;
-  var lastCol = sheet.getLastColumn();
-  var values = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  if (!serial || lastRow < 2) return result;
+
   var serialIdx = COLUMNS.indexOf('serialNumber');
-  var ignore = {};
-  ['timestamp', 'wifiAdapter', 'wifiDriverVersion', 'networkDriverStatus', 'wifiConnected', 'internetOk']
-    .forEach(function (k) { ignore[COLUMNS.indexOf(k)] = true; });
+  var tsIdx = COLUMNS.indexOf('timestamp');
+  var inspectorIdx = COLUMNS.indexOf('inspector');
+  var tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  var values = sheet.getRange(2, 1, lastRow - 1, COLUMNS.length).getValues();
 
-  function sameExceptIgnored(a, b) {
-    for (var c = 0; c < COLUMNS.length; c++) {
-      if (ignore[c]) continue;
-      if (String(a[c]).trim() !== String(b[c]).trim()) return false;
-    }
-    return true;
+  // Sheets turns "2026-10-23 11:23:47" into a date; turn it back into text
+  // before comparing with what the PC sent.
+  function asText(v) {
+    return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd HH:mm:ss') : String(v).trim();
   }
-
-  var firstRow = {};   // serial -> index in values
-  var toDelete = [];
-  var kept = [];
-  for (var i = 0; i < values.length; i++) {
-    var key = String(values[i][serialIdx]).trim();
-    if (!key) continue;
-    if (firstRow[key] === undefined) { firstRow[key] = i; continue; }
-    if (sameExceptIgnored(values[firstRow[key]], values[i])) toDelete.push(i + 2);
-    else kept.push('row ' + (i + 2) + ' (' + key + ') differs from row ' + (firstRow[key] + 2));
-  }
-  for (var j = toDelete.length - 1; j >= 0; j--) sheet.deleteRow(toDelete[j]);
-  Logger.log('Deleted %s exact-copy row(s): %s', toDelete.length, toDelete.join(', '));
-  Logger.log('Kept %s row(s) that differ from the first run: %s', kept.length, kept.join('; '));
-}
-
-// Returns {row, timestamp, inspector} for the first existing row with this
-// serial number, or null if this serial hasn't been inspected before.
-function findExistingInspection_(sheet, serialCol, serialNumber) {
-  if (!serialNumber) return null;
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return null;
-
-  var tsCol = COLUMNS.indexOf('timestamp') + 1;
-  var inspectorCol = COLUMNS.indexOf('inspector') + 1;
-  var values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
 
   for (var i = 0; i < values.length; i++) {
-    if (String(values[i][serialCol - 1]).trim() === String(serialNumber).trim()) {
-      return {
-        row: i + 2,
-        timestamp: values[i][tsCol - 1],
-        inspector: values[i][inspectorCol - 1]
-      };
+    if (String(values[i][serialIdx]).trim() !== serial) continue;
+    result.count++;
+    if (!result.sameRun && asText(values[i][tsIdx]) === String(timestamp || '').trim()) {
+      result.sameRun = { row: i + 2, timestamp: asText(values[i][tsIdx]), inspector: values[i][inspectorIdx] };
     }
   }
-  return null;
+  return result;
 }
 
 /**

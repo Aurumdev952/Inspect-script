@@ -195,7 +195,7 @@ jobs:
           . .\scripts\Setup-Network.ps1
           Get-ProblemNetworkDevices | Format-Table Name, PNPDeviceID
           exit 0
-      - name: Upload happens once, never backfills, never queues
+      - name: Each run uploads once as a new row, never backfills, never queues
         shell: powershell
         run: |
           $work = "$PWD\upl"; New-Item -ItemType Directory -Force $work | Out-Null
@@ -226,13 +226,14 @@ jobs:
           Write-Host "run 1: $a, requests so far: $(Requests)"
           if ($a -ne 'uploaded' -or (Requests) -ne 1) { throw "First run must upload exactly once" }
 
-          $b = Run "$PWD\pc1"      # same PC again
-          Write-Host "run 2 (same PC): $b, requests so far: $(Requests)"
-          if ($b -ne 'already-sent' -or (Requests) -ne 1) { throw "Same PC must not upload again" }
+          Start-Sleep -Seconds 2
+          $b = Run "$PWD\pc1"      # same PC inspected again (e.g. new Wi-Fi card): a new row
+          Write-Host "run 2 (same PC again): $b, requests so far: $(Requests)"
+          if ($b -ne 'uploaded' -or (Requests) -ne 2) { throw "A PC inspected again must upload its new result" }
 
           'duplicate' | Set-Content "$work\mode.txt"
           $c = Run "$PWD\pc2"      # fresh PC folder, Sheet already has the serial
-          Write-Host "run 3 (Sheet says duplicate): $c"
+          Write-Host "run 3 (same run already saved): $c"
           if ($c -ne 'already-in-sheet') { throw "A duplicate answer must be reported calmly, not as an error" }
 
           Stop-Job $server; Remove-Job $server -Force; Start-Sleep -Seconds 1

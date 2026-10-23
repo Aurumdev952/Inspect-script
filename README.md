@@ -59,19 +59,21 @@ One-time setup, done by the Sheet owner:
 
 1. Open the Google Sheet → **Extensions → Apps Script**.
 2. Paste all of `AppsScript/Code.gs` (replace what is there).
-3. To write to a specific tab, set `SHEET_GID` to the number after `gid=`
-   in the Sheet URL. Leave it `null` to use a tab named `Inspections`.
+3. `Code.gs` writes only to the `Inspections` tab (`SHEET_GID = 418189154`).
+   For another Sheet set `SHEET_GID` to the number after `gid=` in its URL.
 4. **Deploy → New deployment → Web app**, Execute as **Me**, Who has access
    **Anyone**. Copy the URL.
 5. Put that URL in `WebhookUrl` in `config.json` on the flash disk.
 
-After that every PC uploads its own row, **once**. Nothing is queued or
-re-sent by other PCs, so old failed uploads can never come back as
-duplicates. If a PC could not upload (no internet), its row is in
-`inspection-log.csv` with `uploadStatus = failed`: run the inspection on that
-PC again when it is online. The Sheet never saves the same serial number
-twice (and `removeDuplicateInspections()` in `Code.gs` cleans up rows that
-are already duplicated).
+After that every inspection uploads its own row, **once**. A PC that is
+inspected again (for example after a Wi-Fi card was added) gets a **new row**;
+earlier rows stay, and the Sheet's last column, **Inspection #**, numbers them
+(1 = first inspection of that serial number, 2 = next, ...). Nothing is
+queued or re-sent by other PCs, so old failed uploads can never come back.
+If a PC could not upload (no internet), its row is in `inspection-log.csv`
+with `uploadStatus = failed`: run the inspection on that PC again when it is
+online. The Sheet only refuses the very same inspection twice (same serial
+number and same timestamp), e.g. when an answer got lost and it was resent.
 
 After changing `Code.gs`, use **Deploy → Manage deployments → Edit → New
 version** so the URL stays the same.

@@ -5,3 +5,4 @@ dist/
 *.exe
 pending-uploads.txt
 *.syso
+node_modules

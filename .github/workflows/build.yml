@@ -173,6 +173,12 @@ jobs:
           $c = @(Copied "$PWD\prep-intel"); Write-Host "Intel card -> copied: $($c -join ', ')"
           if ($c.Count -ne 1 -or $c[0] -ne 'Intel-WiFi-6E') { throw "Expected only Intel-WiFi-6E" }
 
+          # TP-Link Archer T2E (Realtek chipset, PCIe card) -> its V1 and V2 packages only
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Prepare-Local.ps1 -UsbRoot $usb -LocalDir "$PWD\prep-t2e" -HardwareIds 'PCI\VEN_10EC&DEV_C821&SUBSYS_C82110EC&REV_00'
+          if ($LASTEXITCODE -ne 0) { throw "Prepare failed ($LASTEXITCODE)" }
+          $c = @(Copied "$PWD\prep-t2e"); Write-Host "TP-Link T2E -> copied: $($c -join ', ')"
+          if ($c.Count -ne 2 -or $c[0] -ne 'TP-Link-Archer-T2E-V1' -or $c[1] -ne 'TP-Link-Archer-T2E-V2') { throw "Expected only the two TP-Link-Archer-T2E folders" }
+
           # A card with no driver on the flash disk -> nothing copied, clear message
           $o = powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Prepare-Local.ps1 -UsbRoot $usb -LocalDir "$PWD\prep-none" -HardwareIds 'PCI\VEN_ABCD&DEV_1234' | Out-String
           Write-Host $o

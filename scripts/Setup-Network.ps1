@@ -376,7 +376,9 @@ function Invoke-NetworkSetup {
         # A working Wi-Fi card is the only thing that decides the network
         # result. Other devices without drivers (chipset, SM Bus, ...) are
         # not needed for the inspection and never cause a FAIL.
-        $result.wifiAdapter       = $adapter.InterfaceDescription
+        # A USB Wi-Fi stick is marked so the record shows the PC has no built-in card.
+        $usbTag = if ("$($adapter.PnPDeviceID)" -match '^USB\\') { ' [USB]' } else { '' }
+        $result.wifiAdapter       = $adapter.InterfaceDescription + $usbTag
         $result.wifiDriverVersion = $adapter.DriverVersion
         $result.networkDriverStatus = 'OK'
         Write-Host ("  {0,-12}: {1} (driver {2})" -f 'Wi-Fi card', $adapter.InterfaceDescription, $adapter.DriverVersion) -ForegroundColor Green

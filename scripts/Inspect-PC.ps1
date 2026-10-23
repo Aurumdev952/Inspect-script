@@ -13,8 +13,10 @@
 
   Every run also appends to a local CSV (inspection-log.csv) with an
   "uploadStatus" column, so a result is never lost even if the upload fails.
-  Results are uploaded once, by the PC that made them. Nothing is queued or
-  re-sent later, so the Sheet can't get duplicates from old failed uploads.
+  Every run is uploaded once, by the PC that made it, as a NEW row. A PC that
+  is inspected again (e.g. after a Wi-Fi card was added) gets a new row; the
+  Sheet numbers them in its "Inspection #" column. Nothing is queued or
+  re-sent later, so old failed uploads can't come back as duplicates.
 #>
 
 param(
@@ -439,13 +441,14 @@ $script:UsageCtx.internetOk = [string][bool]$network.internetOk
 Write-DetailLog "Result: $overallResult serial=$serialNumber notes=$notesText"
 
 # --- Upload to the Google Sheet: once, by this PC, no queue --------------
-# A result is sent a single time. If that fails (no internet...), it is NOT
-# queued and NOT retried by other PCs later: the row stays in
-# inspection-log.csv (uploadStatus = "failed") and the PC is simply
-# inspected again when it is online. The Sheet rejects a serial number it
-# already has, and this PC remembers what it already sent (uploaded.txt).
+# Every run is sent a single time, as a new row (a PC inspected again keeps
+# its earlier rows; the Sheet counts them in "Inspection #"). If the upload
+# fails (no internet...), it is NOT queued and NOT retried by other PCs
+# later: the row stays in inspection-log.csv (uploadStatus = "failed") and the
+# PC is simply inspected again when it is online. The Sheet only refuses a
+# row it already has (same serial number AND same timestamp), which can
+# happen when the answer to an upload got lost and the upload is repeated.
 Write-Host "`n[3/3] Saving result" -ForegroundColor Cyan
-$ledgerPath = Join-Path $FlashRoot 'uploaded.txt'
 
 function Send-InspectionRow {
     # Returns 'ok' or 'duplicate'; throws on network/server errors.
@@ -458,16 +461,11 @@ function Send-InspectionRow {
 
 $uploadStatus = 'skipped'
 $uploadNote = ''
-$alreadySent = $false
-try { $alreadySent = (Test-Path $ledgerPath) -and ((Get-Content $ledgerPath -ErrorAction Stop) -contains $serialNumber) } catch {}
 
 if ($NoUpload) {
     $uploadNote = 'Upload skipped (-NoUpload).'
 } elseif (-not $WebhookUrl) {
     $uploadNote = 'No WebhookUrl in config.json - result saved on this PC only.'
-} elseif ($alreadySent) {
-    $uploadStatus = 'already-sent'
-    $uploadNote = 'This PC was already sent to the Sheet earlier - nothing to add.'
 } else {
     $json = $record | ConvertTo-Json -Depth 3 -Compress
     $lastError = ''
@@ -485,15 +483,12 @@ if ($NoUpload) {
     }
     switch ($uploadStatus) {
         'uploaded'         { $uploadNote = 'Uploaded to the Google Sheet.' }
-        'already-in-sheet' { $uploadNote = 'This PC is already in the Sheet (same serial number) - nothing added.' }
+        'already-in-sheet' { $uploadNote = 'This exact result is already in the Sheet - nothing added.' }
         default {
             $uploadStatus = 'failed'
             $uploadNote = 'Could not upload (no internet?). Result is saved on this PC - run the inspection again when online.'
             Write-Host "  (detail: $lastError)" -ForegroundColor DarkGray
         }
-    }
-    if ($uploadStatus -in 'uploaded', 'already-in-sheet') {
-        try { Add-Content -Path $ledgerPath -Value $serialNumber -Encoding ASCII } catch {}
     }
 }
 
@@ -508,7 +503,7 @@ try {
 }
 
 # --- Summary ------------------------------------------------------------
-$uploadColor = switch ($uploadStatus) { 'uploaded' { 'Green' } 'already-in-sheet' { 'Green' } 'already-sent' { 'Green' } 'failed' { 'Yellow' } default { 'DarkGray' } }
+$uploadColor = switch ($uploadStatus) { 'uploaded' { 'Green' } 'already-in-sheet' { 'Green' } 'failed' { 'Yellow' } default { 'DarkGray' } }
 Write-Host ""
 Write-Host "==============================================" -ForegroundColor $overallColor
 Write-Host ("  RESULT: {0}" -f $overallResult) -ForegroundColor $overallColor

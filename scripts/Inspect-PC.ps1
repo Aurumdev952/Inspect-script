@@ -32,9 +32,6 @@ param(
     [string]$LogPath,
     [string]$DriversDir,
     [string]$ToolVersion = 'dev',
-    # Contract category from the delivery note (5-8). 0 = detect from the laptop.
-    [ValidateSet(0, 5, 6, 7, 8)]
-    [int]$Category = 0,
     [switch]$SkipNetwork,
     [switch]$NoUpload
 )
@@ -145,7 +142,6 @@ Write-Host "==============================================" -ForegroundColor Cya
 
 # --- Who is inspecting? Pick from the "Inspectors" list in config.json
 # (or type a name). The last one used is remembered; Enter keeps it. ---
-$askCategory = -not $Inspector -and -not $Category
 if (-not $Inspector) {
     $lastInspector = ''
     if (Test-Path $InspectorCachePath) {
@@ -182,23 +178,6 @@ if (-not $Inspector) {
     Write-Host "  Inspector: $Inspector" -ForegroundColor Green
     if ($Inspector -ne $lastInspector) {
         try { $Inspector | Out-File -FilePath $InspectorCachePath -Encoding UTF8 -NoNewline } catch {}
-    }
-}
-
-# --- Which contract category? Asked together with the name; Enter lets the
-# tool detect it from the laptop model (and the touch screen for 5 vs 6). ---
-if ($askCategory) {
-    Write-Host "`nWhich Lot 2 category is this laptop? (see the delivery note)" -ForegroundColor Cyan
-    foreach ($n in 5..8) {
-        $names = ($script:Lot2Models | Where-Object Category -eq $n | ForEach-Object { $_.Name + $(if ($_.Alternative) { ' (alternative)' } else { '' }) }) -join ' or '
-        $main = $script:Lot2Models | Where-Object { $_.Category -eq $n -and -not $_.Alternative }
-        Write-Host ("  {0}) {1}  [{2}GB RAM, {3}GB disk{4}]" -f $n, $names, $main.RamGB, $main.DiskGB, $(if ($main.Touch) { ', touch' } else { '' }))
-    }
-    while ($true) {
-        $typed = "$(Read-Host 'Number [Enter = detect it]')".Trim()
-        if (-not $typed) { break }
-        if ($typed -in '5', '6', '7', '8') { $Category = [int]$typed; break }
-        Write-Host "  Type 5, 6, 7 or 8, or just press Enter." -ForegroundColor Yellow
     }
 }
 
@@ -346,7 +325,7 @@ if ($null -ne $powerOnHours) {
 }
 Write-DetailLog ("Facts: " + ($facts | ConvertTo-Json -Compress))
 
-$eval = Get-Lot2Evaluation -Facts $facts -Category $Category
+$eval = Get-Lot2Evaluation -Facts $facts
 
 Write-Host "`nInspecting $hostname (serial: $serialNumber) as $Inspector..." -ForegroundColor Cyan
 if ($eval.Model) {
@@ -361,6 +340,9 @@ $checkLabels = [ordered]@{
 foreach ($c in $eval.Checks) {
     $color = @{ Meets = 'Green'; Above = 'Green'; Below = 'Red'; Unknown = $(if ($c.Core) { 'Red' } else { 'DarkYellow' }) }[$c.Status]
     Write-Host ("  {0,-12}: {1}" -f $checkLabels[$c.Key], $c.Text) -ForegroundColor $color
+}
+if (-not $eval.Model) {
+    Write-Host ("  {0,-12}: {1}" -f 'Seen', "$($facts.CpuName); $($facts.RamGB)GB RAM; $($facts.DiskGB)GB $($facts.DiskMediaType)") -ForegroundColor Gray
 }
 $conditionColor = if ($condition -like 'Likely new*') { 'Green' } elseif ($condition -like 'Likely used*') { 'Gray' } else { 'DarkYellow' }
 Write-Host ("  {0,-12}: {1}" -f 'Condition', $condition) -ForegroundColor $conditionColor
@@ -396,16 +378,26 @@ $record = [ordered]@{
     ramGB             = $facts.RamGB
     ramCheck          = Get-CheckText ram
     diskGB            = $facts.DiskGB
+    diskMediaType     = $facts.DiskMediaType
     storageCheck      = Get-CheckText storage
+    gpuNames          = ($facts.GpuNames -join '; ')
     gpuCheck          = Get-CheckText gpu
+    screen            = $(if ($facts.PanelWidth) { "$($facts.PanelWidth)x$($facts.PanelHeight)" + $(if ($facts.PanelInches) { " $($facts.PanelInches) inch" } else { '' }) } else { '' })
     displayCheck      = Get-CheckText display
+    touchScreen       = $(if ($facts.HasTouch) { 'Yes' } else { 'No' })
     touchCheck        = Get-CheckText touch
+    fingerprintReader = $facts.FingerprintName
     fingerprintCheck  = Get-CheckText fingerprint
+    batteryWh         = $facts.BatteryWh
     batteryCheck      = Get-CheckText battery
     wifi6eCheck       = Get-CheckText wifi6e
+    bluetooth         = $(if ($facts.HasBluetooth) { 'Yes' } else { 'No' })
     bluetoothCheck    = Get-CheckText bluetooth
+    camera            = $(if ($facts.HasCamera) { 'Yes' } else { 'No' })
     cameraCheck       = Get-CheckText camera
+    tpmVersion        = $facts.TpmVersion
     tpmCheck          = Get-CheckText tpm
+    biosVersion       = "$($bios.SMBIOSBIOSVersion)"
     os                = $facts.OsCaption
     osBuild           = $os.BuildNumber
     osCheck           = Get-CheckText os

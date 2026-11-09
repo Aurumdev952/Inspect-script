@@ -19,19 +19,19 @@ function Pc([hashtable]$Over) {
 }
 
 $r = Get-Lot2Evaluation (Pc @{})
-Check 'EliteBook 640 G11 with touch, 16GB, 1TB -> category 6, PASS' ($r.Category -eq '6' -and $r.Pass -and $r.Source -like 'auto*touch*')
+Check 'EliteBook 640 G11 with touch, 16GB, 1TB -> category 6, PASS' ($r.Category -eq '6' -and $r.Pass -and $r.Source -like 'model name + specs*')
 
 $r = Get-Lot2Evaluation (Pc @{ HasTouch = $false; RamGB = 7.7; DiskGB = 512; BatteryWh = 60 })
 Check 'EliteBook 640 G11 without touch, 8GB, 512GB -> category 5, PASS' ($r.Category -eq '5' -and $r.Pass)
 
-$r = Get-Lot2Evaluation (Pc @{ RamGB = 7.7; DiskGB = 512 }) -Category 6
-Check 'inspector says category 6 but PC has 8GB/512GB -> FAIL on RAM and storage' (-not $r.Pass -and (Status $r ram) -eq 'Below' -and (Status $r storage) -eq 'Below')
+$r = Get-Lot2Evaluation (Pc @{ HasTouch = $false })
+Check 'EliteBook 16GB/1TB without touch -> closest is category 6, FAIL on touch only' ($r.Category -eq '6' -and -not $r.Pass -and (Status $r touch) -eq 'Below' -and $r.Failed.Count -eq 1)
 
-$r = Get-Lot2Evaluation (Pc @{}) -Category 7
-Check 'inspector says category 7 but PC is an EliteBook -> FAIL on model' (-not $r.Pass -and (Status $r model) -eq 'Below')
+$r = Get-Lot2Evaluation (Pc @{ HasTouch = $false; RamGB = 7.7; DiskGB = 256; BatteryWh = 60 })
+Check 'EliteBook 8GB/256GB -> closest is category 5, FAIL on storage' ($r.Category -eq '5' -and -not $r.Pass -and (Status $r storage) -eq 'Below')
 
 $r = Get-Lot2Evaluation (Pc @{ Model = 'HP ProBook 450 G10'; CpuName = 'Intel(R) Core(TM) i5-1335U' })
-Check 'model not in contract -> FAIL' (-not $r.Pass -and (Status $r model) -eq 'Below' -and -not $r.Model)
+Check 'model not in contract -> FAIL, common checks still reported' (-not $r.Pass -and (Status $r model) -eq 'Below' -and -not $r.Model -and (Status $r wifi6e) -eq 'Meets' -and (Status $r os) -eq 'Meets')
 
 $r = Get-Lot2Evaluation (Pc @{ Model = 'HP OmniBook 5 Flip Laptop 14-fp0xxx'; CpuName = 'Intel(R) Core(TM) 7 150U'; FingerprintName = $null; BatteryWh = 43 })
 Check 'OmniBook 5 Flip (alternative) with Core 7 150U -> PASS, no fingerprint/battery check' ($r.Pass -and $r.Model.Alternative -and -not (Status $r fingerprint) -and -not (Status $r battery))
@@ -80,6 +80,13 @@ Check 'low-resolution screen -> FAIL' (-not $r.Pass -and (Status $r display) -eq
 
 $r = Get-Lot2Evaluation (Pc @{ TpmVersion = '1.2' })
 Check 'TPM 1.2 -> FAIL' (-not $r.Pass -and (Status $r tpm) -eq 'Below')
+
+$ps = Get-Content (Join-Path $Scripts 'Inspect-PC.ps1') -Raw
+$recordBlock = [regex]::Match($ps, '(?s)\$record = \[ordered\]@\{(.*?)\r?\n\}').Groups[1].Value
+$recordKeys = @([regex]::Matches($recordBlock, '(?m)^\s{4}(\w+)\s*=') | ForEach-Object { $_.Groups[1].Value })
+$gs = Get-Content (Join-Path $Scripts '..\AppsScript\Code.gs') -Raw
+$sheetKeys = @([regex]::Matches([regex]::Match($gs, '(?s)var COLUMNS = \[(.*?)\];').Groups[1].Value, "'(\w+)'") | ForEach-Object { $_.Groups[1].Value })
+Check "Code.gs COLUMNS match the record Inspect-PC.ps1 sends ($($recordKeys.Count) fields)" (($recordKeys -join ',') -eq ($sheetKeys -join ','))
 
 if ($fail) { "$fail test(s) failed"; exit 1 }
 'All Lot 2 spec tests passed'

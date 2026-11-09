@@ -12,14 +12,14 @@ var SHEET_NAME = 'Inspections';
 var SHEET_GID = 1001;
 
 var COLUMNS = [
-  'timestamp', 'inspector', 'serialNumber', 'hostname', 'manufacturer', 'model',
-  'category', 'categorySource', 'contractModel', 'overallResult', 'notes',
-  'modelCheck', 'cpuModel', 'cpuCheck', 'ramGB', 'ramCheck', 'diskGB', 'storageCheck',
-  'gpuCheck', 'displayCheck', 'touchCheck', 'fingerprintCheck', 'batteryCheck',
-  'wifi6eCheck', 'bluetoothCheck', 'cameraCheck', 'tpmCheck',
-  'os', 'osBuild', 'osCheck', 'activationCheck', 'condition', 'diskPowerOnHours',
-  'wifiAdapter', 'wifiDriverVersion', 'networkDriverStatus', 'wifiConnected', 'internetOk',
-  'toolVersion'
+  'timestamp', 'inspector', 'serialNumber', 'hostname', 'manufacturer', 'model', 'category',
+  'categorySource', 'contractModel', 'overallResult', 'notes', 'modelCheck', 'cpuModel',
+  'cpuCheck', 'ramGB', 'ramCheck', 'diskGB', 'diskMediaType', 'storageCheck', 'gpuNames',
+  'gpuCheck', 'screen', 'displayCheck', 'touchScreen', 'touchCheck', 'fingerprintReader',
+  'fingerprintCheck', 'batteryWh', 'batteryCheck', 'wifi6eCheck', 'bluetooth', 'bluetoothCheck',
+  'camera', 'cameraCheck', 'tpmVersion', 'tpmCheck', 'biosVersion', 'os', 'osBuild', 'osCheck',
+  'activationCheck', 'condition', 'diskPowerOnHours', 'wifiAdapter', 'wifiDriverVersion',
+  'networkDriverStatus', 'wifiConnected', 'internetOk', 'toolVersion'
 ];
 
 // Filled in by this script, not sent by the PC: 1 for the first inspection of
@@ -27,14 +27,15 @@ var COLUMNS = [
 var NUMBER_HEADER = 'Inspection #';
 
 var HEADER_ROW = [
-  'Timestamp', 'Inspector', 'Serial Number', 'Hostname', 'Manufacturer', 'Model',
-  'Category', 'Category From', 'Contract Model', 'Overall Result', 'Notes',
-  'Model Check', 'CPU', 'CPU Check', 'RAM (GB)', 'RAM Check', 'Disk (GB)', 'Storage Check',
-  'Graphics Check', 'Screen Check', 'Touch Check', 'Fingerprint Check', 'Battery Check',
-  'Wi-Fi 6E Check', 'Bluetooth Check', 'Camera Check', 'TPM Check',
-  'OS', 'OS Build', 'OS Check', 'Activation Check', 'Condition (New?)', 'Disk Power-On Hours',
-  'Wi-Fi Adapter', 'Wi-Fi Driver Version', 'Network Driver Status', 'Wi-Fi Connected', 'Internet OK',
-  'Tool Version',
+  'Timestamp', 'Inspector', 'Serial Number', 'Hostname', 'Manufacturer', 'Model', 'Category',
+  'Category From', 'Contract Model', 'Overall Result', 'Notes', 'Model Check', 'CPU', 'CPU Check',
+  'RAM (GB)', 'RAM Check', 'Disk (GB)', 'Disk Type', 'Storage Check', 'Graphics', 'Graphics Check',
+  'Screen', 'Screen Check', 'Touch Screen', 'Touch Check', 'Fingerprint Reader',
+  'Fingerprint Check', 'Battery (Wh)', 'Battery Check', 'Wi-Fi 6E Check', 'Bluetooth',
+  'Bluetooth Check', 'Camera', 'Camera Check', 'TPM Version', 'TPM Check', 'BIOS Version', 'OS',
+  'OS Build', 'OS Check', 'Activation Check', 'Condition (New?)', 'Disk Power-On Hours',
+  'Wi-Fi Adapter', 'Wi-Fi Driver Version', 'Network Driver Status', 'Wi-Fi Connected',
+  'Internet OK', 'Tool Version',
   NUMBER_HEADER
 ];
 

@@ -15,9 +15,9 @@ ON EACH PC:
   2. Double-click PC-Inspection.exe  (click "Yes" on the admin prompt)
      (or PC-Inspection.bat - same thing, use it if the exe is blocked)
   3. When it says "You can REMOVE THE FLASH DISK now", pick your name
-     from the list (Enter = last used), then type the laptop's category
-     from the delivery note (5, 6, 7 or 8; Enter = detect it). Take the
-     flash disk out and go to the next PC - this PC keeps going on its own.
+     from the list (Enter = last used), then take the flash disk out and
+     go to the next PC - this PC keeps going on its own. The laptop's
+     contract category is detected automatically.
   4. Come back later for the PASS / FAIL result, then press Enter.
 
   The tool: installs missing network drivers, adds the Wi-Fi and connects,

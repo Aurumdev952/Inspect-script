@@ -7,8 +7,7 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
    and continues from there - **the flash disk can be removed right away**
    and taken to the next PC. Results are copied back to the flash disk at
    the end if it is still plugged in.
-2. Asks the inspector's name (remembered on the flash disk; Enter reuses it)
-   and the laptop's contract category from the delivery note (Enter = detect it).
+2. Asks the inspector's name (remembered on the flash disk; Enter reuses it).
 3. **Network:** if the Wi-Fi card has no working driver, installs drivers from
    `drivers\` on the flash disk, or downloads them from the links in
    `config.json`. Then adds your Wi-Fi networks and connects.
@@ -28,9 +27,12 @@ The contract models live in one table in `scripts/Lot2-Spec.ps1`:
 | 7 | HP ZBook Fury 16 G11, i7-14650HX, RTX 40 series 8GB | HP OMEN 16, Core Ultra 7 255H, RTX 5060 | 16GB / 1TB |
 | 8 | GETAC X600 Pro, i7-11850HE, Quadro RTX 3000 | none | 32GB / 2TB |
 
-Categories 5 and 6 are the same laptop model. When the inspector presses
-Enter at the category question, a touch screen means category 6, no touch
-screen means category 5. Pick the number from the delivery note when it is known.
+The category is detected, never asked. The laptop's model name gives the
+contract models it can be. Categories 5 and 6 are the same EliteBook 640 G11,
+so the tool checks the laptop against both and keeps the one it fits best
+(fewest *Below spec*, then most exact *Meets spec*). Every row also carries what
+the tool saw (CPU, RAM, disk, graphics, screen, touch, fingerprint reader,
+battery, TPM, BIOS), so a laptop that is not a contract model is still described.
 
 Each check is **Meets spec**, **Above spec**, **Below spec** or **Check by hand**.
 The PC **FAILs** on any *Below spec*, and when the model, CPU, RAM, storage,

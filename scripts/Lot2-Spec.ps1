@@ -104,28 +104,97 @@ function Test-PatternCheck {
     New-Check $Key Below "$Actual; contract: $($Spec.Label)" -Core:$Core
 }
 
-function Find-Lot2Model {
-    # Returns @{ Model; Source; ModelMatches }. Category is what the inspector
-    # picked (from the delivery note), or 0 to detect it from the PC.
-    param([hashtable]$Facts, [int]$Category = 0)
-    $pcName = "$($Facts.Manufacturer) $($Facts.Model)"
-    $byModel = @($script:Lot2Models | Where-Object { $pcName -match $_.ModelMatch })
+function Get-ModelChecks {
+    # The checks that depend on which contract model the laptop is held to.
+    param($m, [hashtable]$Facts)
+    $checks = [System.Collections.Generic.List[object]]::new()
+    $checks.Add((Test-PatternCheck cpu $Facts.CpuName $m.Cpu -Core))
 
-    if ($Category) {
-        $inCategory = @($script:Lot2Models | Where-Object { $_.Category -eq $Category })
-        $match = $byModel | Where-Object { $_.Category -eq $Category } | Select-Object -First 1
-        if ($match) { return @{ Model = $match; Source = 'inspector'; ModelMatches = $true } }
-        return @{ Model = $inCategory[0]; Source = 'inspector'; ModelMatches = $false }
+    if ($null -eq $Facts.RamGB) { $checks.Add((New-Check ram Unknown 'not readable' -Core)) }
+    else {
+        $ram = Get-NearestSize $Facts.RamGB $script:StandardRamGB
+        $st = if ($ram -lt $m.RamGB) { 'Below' } elseif ($ram -gt $m.RamGB) { 'Above' } else { 'Meets' }
+        $checks.Add((New-Check ram $st "${ram}GB; contract: $($m.RamGB)GB" -Core))
     }
 
-    if ($byModel.Count -eq 0) { return @{ Model = $null; Source = 'auto'; ModelMatches = $false } }
-    if ($byModel.Count -eq 1) { return @{ Model = $byModel[0]; Source = 'auto'; ModelMatches = $true } }
-    # Same laptop model in two categories (5 and 6): category 6 is the touch screen one.
-    $wantTouch = [bool]$Facts.HasTouch
-    $pick = $byModel | Where-Object { $_.Touch -eq $wantTouch } | Select-Object -First 1
-    if (-not $pick) { $pick = $byModel[0] }
-    $why = if ($wantTouch) { 'touch screen' } else { 'no touch screen' }
-    @{ Model = $pick; Source = "auto ($why)"; ModelMatches = $true }
+    if ($null -eq $Facts.DiskGB) { $checks.Add((New-Check storage Unknown 'not readable' -Core)) }
+    else {
+        $disk = Get-NearestSize $Facts.DiskGB $script:StandardDiskGB
+        $type = if ($Facts.DiskMediaType) { $Facts.DiskMediaType } else { 'type unknown' }
+        $detail = "$(Format-Size $disk) $type; contract: $(Format-Size $m.DiskGB) SSD"
+        $st = if ($disk -lt $m.DiskGB * 0.98) { 'Below' } elseif ($Facts.DiskMediaType -and $Facts.DiskMediaType -ne 'SSD') { 'Below' }
+              elseif (-not $Facts.DiskMediaType) { 'Unknown' } elseif ($disk -gt $m.DiskGB * 1.05) { 'Above' } else { 'Meets' }
+        $checks.Add((New-Check storage $st $detail -Core))
+    }
+
+    if ($m.Gpu) {
+        $gpus = @($Facts.GpuNames | Where-Object { $_ })
+        $hit = $gpus | Where-Object { $_ -match $m.Gpu.Meets -or ($m.Gpu.Above -and $_ -match $m.Gpu.Above) } | Select-Object -First 1
+        if ($hit) { $checks.Add((Test-PatternCheck gpu $hit $m.Gpu -Core)) }
+        elseif ($gpus -match 'NVIDIA') { $checks.Add((Test-PatternCheck gpu (@($gpus -match 'NVIDIA')[0]) $m.Gpu -Core)) }
+        else { $checks.Add((New-Check gpu Unknown "found: $(if ($gpus) { $gpus -join ', ' } else { 'none' }) - NVIDIA driver missing?; contract: $($m.Gpu.Label)" -Core)) }
+    }
+
+    $s = $m.Screen
+    if (-not $Facts.PanelWidth) { $checks.Add((New-Check display Unknown "not readable; contract: $($s.Inches) inch $($s.Width)x$($s.Height)")) }
+    else {
+        $size = if ($Facts.PanelInches) { ' {0:0.#} inch' -f $Facts.PanelInches } else { '' }
+        $detail = "$($Facts.PanelWidth)x$($Facts.PanelHeight)$size; contract: $($s.Inches) inch $($s.Width)x$($s.Height)"
+        $pixels = $Facts.PanelWidth * $Facts.PanelHeight
+        $st = if ($pixels -lt $s.Width * $s.Height) { 'Below' }
+              elseif ($Facts.PanelInches -and [math]::Abs($Facts.PanelInches - $s.Inches) -gt 0.8) { 'Below' }
+              elseif ($pixels -gt $s.Width * $s.Height) { 'Above' } else { 'Meets' }
+        $checks.Add((New-Check display $st $detail))
+    }
+
+    if ($null -ne $m.Touch) {
+        $has = [bool]$Facts.HasTouch
+        $st = if ($has -eq $m.Touch) { 'Meets' } elseif ($has) { 'Above' } else { 'Below' }
+        $checks.Add((New-Check touch $st "$(if ($has) { 'touch screen' } else { 'no touch screen' }); contract: $(if ($m.Touch) { 'touch' } else { 'non-touch' })"))
+    }
+
+    if ($m.Fingerprint) {
+        if ($Facts.FingerprintName) { $checks.Add((New-Check fingerprint Meets $Facts.FingerprintName)) }
+        else { $checks.Add((New-Check fingerprint Unknown 'no fingerprint reader found by Windows; contract: fingerprint reader')) }
+    }
+
+    if ($m.BatteryWh) {
+        if (-not $Facts.BatteryWh) { $checks.Add((New-Check battery Unknown "not readable; contract: $($m.BatteryWh)Wh")) }
+        else {
+            $st = if ($Facts.BatteryWh -lt $m.BatteryWh * 0.97) { 'Below' } elseif ($Facts.BatteryWh -gt $m.BatteryWh * 1.05) { 'Above' } else { 'Meets' }
+            $checks.Add((New-Check battery $st ('{0:0}Wh design capacity; contract: {1}Wh' -f $Facts.BatteryWh, $m.BatteryWh)))
+        }
+    }
+    $checks
+}
+
+function Get-CommonChecks {
+    # Every Lot 2 laptop: Wi-Fi 6E, Bluetooth, camera, TPM 2.0, Windows 11 Pro activated.
+    param([hashtable]$Facts)
+    $wifi = $Facts.WifiAdapter
+    if (-not $wifi) { New-Check wifi6e Below 'no working Wi-Fi card' -Core }
+    elseif ($wifi -match $script:Wifi6ENames) { New-Check wifi6e Meets $wifi -Core }
+    elseif ($wifi -match $script:Wifi6Only) { New-Check wifi6e Below "$wifi is not Wi-Fi 6E" -Core }
+    else { New-Check wifi6e Unknown "$wifi - confirm it is Wi-Fi 6E" }
+
+    if ($Facts.HasBluetooth) { New-Check bluetooth Meets 'present' } else { New-Check bluetooth Unknown 'not found by Windows' }
+    if ($Facts.HasCamera) { New-Check camera Meets 'present' } else { New-Check camera Unknown 'not found by Windows' }
+
+    $tpm = "$($Facts.TpmVersion)"
+    if (-not $tpm) { New-Check tpm Unknown 'not readable; contract: TPM 2.0' }
+    elseif ($tpm -match '^2\.') { New-Check tpm Meets "TPM $tpm" }
+    else { New-Check tpm Below "TPM $tpm; contract: TPM 2.0" }
+
+    $os = "$($Facts.OsCaption)"
+    if (-not $os) { New-Check os Unknown 'not readable' -Core }
+    elseif ($os -match 'Windows 11 Pro') { New-Check os Meets $os -Core }
+    elseif ($os -match 'Windows 11 (Enterprise|Education)') { New-Check os Above $os -Core }
+    else { New-Check os Below "$os; contract: Windows 11 Pro" -Core }
+
+    $act = "$($Facts.Activation)"
+    if ($act -eq 'Licensed') { New-Check activation Meets 'Licensed' -Core }
+    elseif (-not $act) { New-Check activation Unknown 'not readable (run slmgr /xpr)' -Core }
+    else { New-Check activation Below $act -Core }
 }
 
 function Get-Lot2Evaluation {
@@ -135,108 +204,40 @@ function Get-Lot2Evaluation {
         PanelWidth, PanelHeight, PanelInches, HasTouch, WifiAdapter,
         HasBluetooth, HasCamera, FingerprintName, TpmVersion, BatteryWh,
         OsCaption, Activation
+
+      The category is detected, never asked: the laptop model name picks the
+      contract models it can be, and when that leaves more than one (the
+      EliteBook 640 G11 is both category 5 and 6), the one the laptop fits
+      best wins: fewest "Below spec", then most exact "Meets spec".
     #>
-    param([hashtable]$Facts, [int]$Category = 0)
+    param([hashtable]$Facts)
 
-    $found = Find-Lot2Model -Facts $Facts -Category $Category
-    $m = $found.Model
-    $checks = [System.Collections.Generic.List[object]]::new()
     $pcName = "$($Facts.Manufacturer) $($Facts.Model)".Trim()
+    $common = @(Get-CommonChecks $Facts)
+    $candidates = @($script:Lot2Models | Where-Object { $pcName -match $_.ModelMatch })
 
-    if (-not $m) {
+    $m = $null; $source = 'not a contract model'
+    $checks = [System.Collections.Generic.List[object]]::new()
+    if ($candidates.Count -eq 0) {
         $checks.Add((New-Check model Below "$pcName is not a Lot 2 contract model" -Core))
-    } elseif (-not $found.ModelMatches) {
-        $checks.Add((New-Check model Below "$pcName; category $Category is $(@($script:Lot2Models | Where-Object Category -eq $Category | ForEach-Object Name) -join ' or ')" -Core))
     } else {
-        $alt = if ($m.Alternative) { ', approved alternative' } else { '' }
-        $checks.Add((New-Check model Meets "$pcName = category $($m.Category)$alt" -Core))
-    }
-
-    if ($m) {
-        $checks.Add((Test-PatternCheck cpu $Facts.CpuName $m.Cpu -Core))
-
-        if ($null -eq $Facts.RamGB) { $checks.Add((New-Check ram Unknown 'not readable' -Core)) }
-        else {
-            $ram = Get-NearestSize $Facts.RamGB $script:StandardRamGB
-            $st = if ($ram -lt $m.RamGB) { 'Below' } elseif ($ram -gt $m.RamGB) { 'Above' } else { 'Meets' }
-            $checks.Add((New-Check ram $st "${ram}GB; contract: $($m.RamGB)GB" -Core))
-        }
-
-        if ($null -eq $Facts.DiskGB) { $checks.Add((New-Check storage Unknown 'not readable' -Core)) }
-        else {
-            $disk = Get-NearestSize $Facts.DiskGB $script:StandardDiskGB
-            $type = if ($Facts.DiskMediaType) { $Facts.DiskMediaType } else { 'type unknown' }
-            $detail = "$(Format-Size $disk) $type; contract: $(Format-Size $m.DiskGB) SSD"
-            $st = if ($disk -lt $m.DiskGB * 0.98) { 'Below' } elseif ($Facts.DiskMediaType -and $Facts.DiskMediaType -ne 'SSD') { 'Below' }
-                  elseif (-not $Facts.DiskMediaType) { 'Unknown' } elseif ($disk -gt $m.DiskGB * 1.05) { 'Above' } else { 'Meets' }
-            $checks.Add((New-Check storage $st $detail -Core))
-        }
-
-        if ($m.Gpu) {
-            $gpus = @($Facts.GpuNames | Where-Object { $_ })
-            $hit = $gpus | Where-Object { $_ -match $m.Gpu.Meets -or ($m.Gpu.Above -and $_ -match $m.Gpu.Above) } | Select-Object -First 1
-            if ($hit) { $checks.Add((Test-PatternCheck gpu $hit $m.Gpu -Core)) }
-            elseif ($gpus -match 'NVIDIA') { $checks.Add((Test-PatternCheck gpu (@($gpus -match 'NVIDIA')[0]) $m.Gpu -Core)) }
-            else { $checks.Add((New-Check gpu Unknown "found: $(if ($gpus) { $gpus -join ', ' } else { 'none' }) - NVIDIA driver missing?; contract: $($m.Gpu.Label)" -Core)) }
-        }
-
-        $s = $m.Screen
-        if (-not $Facts.PanelWidth) { $checks.Add((New-Check display Unknown "not readable; contract: $($s.Inches) inch $($s.Width)x$($s.Height)")) }
-        else {
-            $size = if ($Facts.PanelInches) { ' {0:0.#} inch' -f $Facts.PanelInches } else { '' }
-            $detail = "$($Facts.PanelWidth)x$($Facts.PanelHeight)$size; contract: $($s.Inches) inch $($s.Width)x$($s.Height)"
-            $pixels = $Facts.PanelWidth * $Facts.PanelHeight
-            $st = if ($pixels -lt $s.Width * $s.Height) { 'Below' }
-                  elseif ($Facts.PanelInches -and [math]::Abs($Facts.PanelInches - $s.Inches) -gt 0.8) { 'Below' }
-                  elseif ($pixels -gt $s.Width * $s.Height) { 'Above' } else { 'Meets' }
-            $checks.Add((New-Check display $st $detail))
-        }
-
-        if ($null -ne $m.Touch) {
-            $has = [bool]$Facts.HasTouch
-            $st = if ($has -eq $m.Touch) { 'Meets' } elseif ($has) { 'Above' } else { 'Below' }
-            $checks.Add((New-Check touch $st "$(if ($has) { 'touch screen' } else { 'no touch screen' }); contract: $(if ($m.Touch) { 'touch' } else { 'non-touch' })"))
-        }
-
-        if ($m.Fingerprint) {
-            if ($Facts.FingerprintName) { $checks.Add((New-Check fingerprint Meets $Facts.FingerprintName)) }
-            else { $checks.Add((New-Check fingerprint Unknown 'no fingerprint reader found by Windows; contract: fingerprint reader')) }
-        }
-
-        if ($m.BatteryWh) {
-            if (-not $Facts.BatteryWh) { $checks.Add((New-Check battery Unknown "not readable; contract: $($m.BatteryWh)Wh")) }
-            else {
-                $st = if ($Facts.BatteryWh -lt $m.BatteryWh * 0.97) { 'Below' } elseif ($Facts.BatteryWh -gt $m.BatteryWh * 1.05) { 'Above' } else { 'Meets' }
-                $checks.Add((New-Check battery $st ('{0:0}Wh design capacity; contract: {1}Wh' -f $Facts.BatteryWh, $m.BatteryWh)))
+        $scored = foreach ($c in $candidates) {
+            $mc = @(Get-ModelChecks $c $Facts)
+            [pscustomobject]@{
+                Model = $c; Checks = $mc
+                Below = @($mc | Where-Object Status -eq 'Below').Count
+                Meets = @($mc | Where-Object Status -eq 'Meets').Count
             }
         }
+        $best = $scored | Sort-Object Below, @{ Expression = 'Meets'; Descending = $true } | Select-Object -First 1
+        $m = $best.Model
+        $source = if ($candidates.Count -eq 1) { 'model name' }
+                  else { 'model name + specs (closest of categories ' + (($candidates | ForEach-Object Category) -join ', ') + ')' }
+        $alt = if ($m.Alternative) { ', approved alternative' } else { '' }
+        $checks.Add((New-Check model Meets "$pcName = category $($m.Category)$alt" -Core))
+        foreach ($c in $best.Checks) { $checks.Add($c) }
     }
-
-    # Every Lot 2 laptop: Wi-Fi 6E, Bluetooth, camera, TPM 2.0, Windows 11 Pro activated.
-    $wifi = $Facts.WifiAdapter
-    if (-not $wifi) { $checks.Add((New-Check wifi6e Below 'no working Wi-Fi card' -Core)) }
-    elseif ($wifi -match $script:Wifi6ENames) { $checks.Add((New-Check wifi6e Meets $wifi -Core)) }
-    elseif ($wifi -match $script:Wifi6Only) { $checks.Add((New-Check wifi6e Below "$wifi is not Wi-Fi 6E" -Core)) }
-    else { $checks.Add((New-Check wifi6e Unknown "$wifi - confirm it is Wi-Fi 6E")) }
-
-    $checks.Add($(if ($Facts.HasBluetooth) { New-Check bluetooth Meets 'present' } else { New-Check bluetooth Unknown 'not found by Windows' }))
-    $checks.Add($(if ($Facts.HasCamera) { New-Check camera Meets 'present' } else { New-Check camera Unknown 'not found by Windows' }))
-
-    $tpm = "$($Facts.TpmVersion)"
-    $checks.Add($(if (-not $tpm) { New-Check tpm Unknown 'not readable; contract: TPM 2.0' }
-                  elseif ($tpm -match '^2\.') { New-Check tpm Meets "TPM $tpm" }
-                  else { New-Check tpm Below "TPM $tpm; contract: TPM 2.0" }))
-
-    $os = "$($Facts.OsCaption)"
-    $checks.Add($(if (-not $os) { New-Check os Unknown 'not readable' -Core }
-                  elseif ($os -match 'Windows 11 Pro') { New-Check os Meets $os -Core }
-                  elseif ($os -match 'Windows 11 (Enterprise|Education)') { New-Check os Above $os -Core }
-                  else { New-Check os Below "$os; contract: Windows 11 Pro" -Core }))
-
-    $act = "$($Facts.Activation)"
-    $checks.Add($(if ($act -eq 'Licensed') { New-Check activation Meets 'Licensed' -Core }
-                  elseif (-not $act) { New-Check activation Unknown 'not readable (run slmgr /xpr)' -Core }
-                  else { New-Check activation Below $act -Core }))
+    foreach ($c in $common) { $checks.Add($c) }
 
     $failed = @($checks | Where-Object { $_.Status -eq 'Below' -or ($_.Status -eq 'Unknown' -and $_.Core) })
     $byHand = @($checks | Where-Object { $_.Status -eq 'Unknown' -and -not $_.Core })
@@ -244,7 +245,7 @@ function Get-Lot2Evaluation {
     [pscustomobject]@{
         Model    = $m
         Category = if ($m) { "$($m.Category)" } else { '' }
-        Source   = $found.Source
+        Source   = $source
         Checks   = $checks
         Pass     = $failed.Count -eq 0
         Failed   = $failed

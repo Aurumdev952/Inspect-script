@@ -70,7 +70,7 @@ exit /b 0
 """.replace("%VERSION%", version)
 
 parts = [header]
-for name in ("Inspect-PC.ps1", "Setup-Network.ps1", "Prepare-Local.ps1"):
+for name in ("Inspect-PC.ps1", "Lot2-Spec.ps1", "Setup-Network.ps1", "Prepare-Local.ps1"):
     body = (root / "scripts" / name).read_text(encoding="utf-8-sig")
     parts.append(f"#==FILE:{name}==\n{body}\n")
 

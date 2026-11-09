@@ -15,12 +15,15 @@ ON EACH PC:
   2. Double-click PC-Inspection.exe  (click "Yes" on the admin prompt)
      (or PC-Inspection.bat - same thing, use it if the exe is blocked)
   3. When it says "You can REMOVE THE FLASH DISK now", pick your name
-     from the list (Enter = last used), then take the flash disk out and
-     go to the next PC - this PC keeps going on its own.
+     from the list (Enter = last used), then type the laptop's category
+     from the delivery note (5, 6, 7 or 8; Enter = detect it). Take the
+     flash disk out and go to the next PC - this PC keeps going on its own.
   4. Come back later for the PASS / FAIL result, then press Enter.
 
   The tool: installs missing network drivers, adds the Wi-Fi and connects,
-  checks CPU / RAM / disk / Windows activation, then uploads the result.
+  checks the laptop against the Lot 2 laptops contract (model, CPU, RAM,
+  SSD, graphics, screen, touch, Wi-Fi 6E, Windows 11 Pro, activation...),
+  then uploads the result.
   Results: uploaded to the Google Sheet, saved on the PC in
   C:\ProgramData\PC-Inspection\inspection-log.csv, and copied to the
   flash disk too if it is still plugged in at the end.

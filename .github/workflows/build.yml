@@ -92,6 +92,11 @@ jobs:
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-NetworkRules.ps1 -Scripts "$PWD\scripts"
           if ($LASTEXITCODE -ne 0) { throw "Network rules test failed" }
+      - name: Lot 2 contract spec rules
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Lot2Spec.ps1 -Scripts "$PWD\scripts"
+          if ($LASTEXITCODE -ne 0) { throw "Lot 2 spec test failed" }
       - name: Windows Defender scan of the exe
         continue-on-error: true
         shell: powershell
@@ -279,7 +284,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force menu | Out-Null
           Copy-Item dist\PC-Inspection.exe menu\
-          '{ "Inspectors": ["Alice Test", "Bob Test"], "RequireWifi": false }' | Set-Content menu\config.json
+          '{ "Inspectors": ["Alice Test", "Bob Test"] }' | Set-Content menu\config.json
           cmd /c "echo 2| menu\PC-Inspection.exe --no-pause --wait -NoUpload -SkipNetwork"
           $row = Import-Csv menu\inspection-log.csv | Select-Object -Last 1
           Write-Host "Inspector recorded: $($row.inspector)"

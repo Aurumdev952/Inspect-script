@@ -7,8 +7,6 @@
     { "Ssid": "YOUR-WIFI-NAME", "Password": "YOUR-WIFI-PASSWORD", "Security": "WPA2PSK" }
   ],
 
-  "RequireWifi": true,
-
   "TimeZoneOffsetHours": 2,
 
   "DriverPackages": [

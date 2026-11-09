@@ -7,14 +7,41 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
    and continues from there - **the flash disk can be removed right away**
    and taken to the next PC. Results are copied back to the flash disk at
    the end if it is still plugged in.
-2. Asks the inspector's name (remembered on the flash disk; Enter reuses it).
+2. Asks the inspector's name (remembered on the flash disk; Enter reuses it)
+   and the laptop's contract category from the delivery note (Enter = detect it).
 3. **Network:** if the Wi-Fi card has no working driver, installs drivers from
    `drivers\` on the flash disk, or downloads them from the links in
    `config.json`. Then adds your Wi-Fi networks and connects.
-4. **Specs:** checks CPU (i5 14th gen), RAM (8GB), disk (256GB SSD), Windows
-   activation, condition (disk power-on hours).
+4. **Specs:** checks the laptop against the **Lot 2 laptops contract**
+   (000008/G/ICB/2024/2025/RISA, SALTEL, Amendment No. 2). See below.
 5. Shows **PASS / FAIL**, saves a row to `inspection-log.csv` on the flash
    disk, and uploads it to the Google Sheet.
+
+## What is checked (Lot 2 contract)
+
+The contract models live in one table in `scripts/Lot2-Spec.ps1`:
+
+| Category | Contract model | Approved alternative (Amendment 2) | RAM / SSD |
+|---|---|---|---|
+| 5 | HP EliteBook 640 14 inch G11, Core Ultra 7, non-touch | HP OmniBook 5 Flip, Core 7 | 8GB / 512GB (alt. 16GB / 1TB) |
+| 6 | HP EliteBook 640 14 inch G11, Core Ultra 7, touch | HP OmniBook 5 Flip, Core 7, touch | 16GB / 1TB |
+| 7 | HP ZBook Fury 16 G11, i7-14650HX, RTX 40 series 8GB | HP OMEN 16, Core Ultra 7 255H, RTX 5060 | 16GB / 1TB |
+| 8 | GETAC X600 Pro, i7-11850HE, Quadro RTX 3000 | none | 32GB / 2TB |
+
+Categories 5 and 6 are the same laptop model. When the inspector presses
+Enter at the category question, a touch screen means category 6, no touch
+screen means category 5. Pick the number from the delivery note when it is known.
+
+Each check is **Meets spec**, **Above spec**, **Below spec** or **Check by hand**.
+The PC **FAILs** on any *Below spec*, and when the model, CPU, RAM, storage,
+graphics (categories 7 and 8), Wi-Fi 6E card, Windows 11 Pro or activation
+cannot be read. *Check by hand* on the screen, touch, fingerprint reader,
+battery, Bluetooth, camera or TPM only goes into the notes.
+The amendment lists only CPU, graphics, RAM, storage and screen for the
+alternative models, so the fingerprint and battery checks are skipped for them.
+Things Windows cannot see (keyboard backlight, ports, carry bag, privacy
+shutter, power adapter) are listed on the Sheet's **Contract Specs** tab
+for a look by eye.
 
 ## Set up a flash disk
 
@@ -37,7 +64,6 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
 | `Inspectors` | List of inspector names shown as a numbered menu, e.g. `["Hugues", "Vanessa"]`. Empty = type the name. |
 | `WifiNetworks` | List of `{ "Ssid", "Password", "Security" }`. Security: `WPA2PSK` (default), `WPA3SAE`, `WPAPSK`, `OPEN`. Add `"Hidden": true` for hidden networks. Tried in order. |
 | `DriverPackages` | Network driver links: `Name`, `Url`, `Type` (`zip`, `exe`, `msi`, `inf`, `cab`), optional `SilentArgs` (for `exe`), optional `MatchHardwareIds` (e.g. `VEN_8086` Intel, `VEN_10EC` Realtek, `VEN_14C3` MediaTek, `VEN_17CB` Qualcomm) |
-| `RequireWifi` | `true` = PC fails if it has no working Wi-Fi card/driver |
 | `TimeZoneOffsetHours` | Hours added to UTC for the time saved in the Sheet. `2` = Rwanda (the PCs' own time zone is often wrong) |
 
 3. The Wi-Fi drivers (Intel + Realtek, from the team's WifiDrivers pack)
@@ -59,7 +85,7 @@ One-time setup, done by the Sheet owner:
 
 1. Open the Google Sheet → **Extensions → Apps Script**.
 2. Paste all of `AppsScript/Code.gs` (replace what is there).
-3. `Code.gs` writes only to the `Inspections` tab (`SHEET_GID = 418189154`).
+3. `Code.gs` writes only to the `Inspections` tab (`SHEET_GID = 1001`).
    For another Sheet set `SHEET_GID` to the number after `gid=` in its URL.
 4. **Deploy → New deployment → Web app**, Execute as **Me**, Who has access
    **Anyone**. Copy the URL.
@@ -106,7 +132,8 @@ flash disk on that PC later. Wi-Fi passwords are never written to the logs.
 ## Files
 
 - `main.go` — the exe: elevates, unpacks the embedded scripts, runs them.
-- `scripts/Inspect-PC.ps1` — the inspection (specs, log, upload).
+- `scripts/Inspect-PC.ps1` — the inspection (reads the laptop, log, upload).
+- `scripts/Lot2-Spec.ps1` — the Lot 2 contract models and the PASS/FAIL rules (tested by `tests/Test-Lot2Spec.ps1`).
 - `scripts/Setup-Network.ps1` — drivers + Wi-Fi + internet check.
 - `flashdisk/` — files that go on the flash disk next to the exe.
 - `build/make-bat.py` — builds `PC-Inspection.bat`, a one-file backup of the exe (scripts embedded) for PCs where antivirus blocks the exe.

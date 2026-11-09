@@ -1,9 +1,10 @@
 <#
 .SYNOPSIS
-  Inspects the local Windows PC's hardware/OS against the target spec
-  (Intel Core i5, 14th generation; 8GB RAM; 256GB SSD; Windows, activated),
-  makes sure the network (Wi-Fi) drivers work and Wi-Fi is configured,
-  and uploads one record to a shared Google Sheet via an Apps Script webhook.
+  Inspects a delivered laptop against the Lot 2 laptops contract
+  (000008/G/ICB/2024/2025/RISA, SALTEL, Amendment No. 2): categories 5-8 and
+  their approved alternative models, specs in Lot2-Spec.ps1. Makes sure the
+  Wi-Fi driver works and Wi-Fi is configured, and uploads one record to a
+  shared Google Sheet via an Apps Script webhook.
 
 .USAGE
   Easiest: double-click PC-Inspection.exe on the flash disk. It runs this
@@ -31,6 +32,9 @@ param(
     [string]$LogPath,
     [string]$DriversDir,
     [string]$ToolVersion = 'dev',
+    # Contract category from the delivery note (5-8). 0 = detect from the laptop.
+    [ValidateSet(0, 5, 6, 7, 8)]
+    [int]$Category = 0,
     [switch]$SkipNetwork,
     [switch]$NoUpload
 )
@@ -41,6 +45,7 @@ if (-not $LogPath)            { $LogPath            = Join-Path $FlashRoot 'insp
 if (-not $DriversDir)         { $DriversDir         = Join-Path $FlashRoot 'drivers' }
 
 . (Join-Path $PSScriptRoot 'Setup-Network.ps1')
+. (Join-Path $PSScriptRoot 'Lot2-Spec.ps1')
 
 $ProgressPreference = 'SilentlyContinue'   # progress bars make web calls and zips much slower
 $runTimer = [Diagnostics.Stopwatch]::StartNew()
@@ -110,7 +115,7 @@ if (Test-Path $ConfigPath) {
 }
 if (-not $WebhookUrl) { $WebhookUrl = $config.WebhookUrl }
 if ($null -ne $config.TimeZoneOffsetHours) { $script:TzOffsetHours = [double]$config.TimeZoneOffsetHours }
-Write-DetailLog ("Config: webhook " + $(if ($WebhookUrl) { 'set' } else { 'MISSING' }) + ", inspectors " + @($config.Inspectors).Count + ", wifi networks " + @($config.WifiNetworks).Count + ", requireWifi " + ($config.RequireWifi -ne $false))
+Write-DetailLog ("Config: webhook " + $(if ($WebhookUrl) { 'set' } else { 'MISSING' }) + ", inspectors " + @($config.Inspectors).Count + ", wifi networks " + @($config.WifiNetworks).Count)
 
 # Two slow Windows queries (Windows activation, disk power-on hours) run in
 # the background while the inspector picks a name and the network is set up.
@@ -140,6 +145,7 @@ Write-Host "==============================================" -ForegroundColor Cya
 
 # --- Who is inspecting? Pick from the "Inspectors" list in config.json
 # (or type a name). The last one used is remembered; Enter keeps it. ---
+$askCategory = -not $Inspector -and -not $Category
 if (-not $Inspector) {
     $lastInspector = ''
     if (Test-Path $InspectorCachePath) {
@@ -179,6 +185,23 @@ if (-not $Inspector) {
     }
 }
 
+# --- Which contract category? Asked together with the name; Enter lets the
+# tool detect it from the laptop model (and the touch screen for 5 vs 6). ---
+if ($askCategory) {
+    Write-Host "`nWhich Lot 2 category is this laptop? (see the delivery note)" -ForegroundColor Cyan
+    foreach ($n in 5..8) {
+        $names = ($script:Lot2Models | Where-Object Category -eq $n | ForEach-Object { $_.Name + $(if ($_.Alternative) { ' (alternative)' } else { '' }) }) -join ' or '
+        $main = $script:Lot2Models | Where-Object { $_.Category -eq $n -and -not $_.Alternative }
+        Write-Host ("  {0}) {1}  [{2}GB RAM, {3}GB disk{4}]" -f $n, $names, $main.RamGB, $main.DiskGB, $(if ($main.Touch) { ', touch' } else { '' }))
+    }
+    while ($true) {
+        $typed = "$(Read-Host 'Number [Enter = detect it]')".Trim()
+        if (-not $typed) { break }
+        if ($typed -in '5', '6', '7', '8') { $Category = [int]$typed; break }
+        Write-Host "  Type 5, 6, 7 or 8, or just press Enter." -ForegroundColor Yellow
+    }
+}
+
 $script:UsageCtx.inspector = $Inspector
 Write-DetailLog "Inspector: $Inspector"
 
@@ -191,53 +214,11 @@ if ($SkipNetwork) {
 }
 Write-Took 'network' $netTimer
 
-Write-Host "`n[2/3] Hardware & Windows checks" -ForegroundColor Cyan
+Write-Host "`n[2/3] Laptop checks (Lot 2 contract)" -ForegroundColor Cyan
 $hwTimer = [Diagnostics.Stopwatch]::StartNew()
 
-function Get-CpuSpecStatus {
-    param([string]$CpuName)
-
-    # Target: Intel Core i5, 14th generation (e.g. i5-14400, i5-1440P, "14th Gen Intel(R) Core(TM) i5-...")
-    $is14thGenI5 = ($CpuName -match 'i5-14\d{2}') -or ($CpuName -match '14th Gen.*i5')
-    if ($is14thGenI5) { return 'Meets spec (i5, 14th gen)' }
-
-    $genMatch = [regex]::Match($CpuName, 'i([3579])-(\d{1,2})\d{3}')
-    if ($genMatch.Success) {
-        $tier = [int]$genMatch.Groups[1].Value
-        $gen  = [int]$genMatch.Groups[2].Value
-
-        if ($tier -eq 5) {
-            if ($gen -lt 14) { return "Below spec (i5, ${gen}th gen)" }
-            else { return "Above spec (i5, ${gen}th gen)" }
-        } elseif ($tier -lt 5) {
-            return "Below spec (i$tier, ${gen}th gen)"
-        } else {
-            return "Above spec (i$tier, ${gen}th gen)"
-        }
-    }
-
-    return "Unknown - verify manually ($CpuName)"
-}
-
-function Get-RamSpecStatus {
-    param([double]$RamGB)
-
-    # Windows reports a bit less than a stick's labeled size (some is
-    # reserved for the BIOS/integrated graphics), so an "8GB" machine often
-    # reads as ~7.7GB. Snap to the nearest standard RAM size instead of
-    # comparing the raw reading exactly, same approach as the disk check.
-    $standardSizesGB = 2, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128
-    $closest = $standardSizesGB | Sort-Object { [math]::Abs($_ - $RamGB) } | Select-Object -First 1
-
-    if ($closest -lt 8) { return "Below spec (~${closest}GB RAM, raw ${RamGB}GB)" }
-    elseif ($closest -eq 8) { return "Meets spec (8GB)" }
-    else { return "Above spec (~${closest}GB RAM, raw ${RamGB}GB)" }
-}
-
 function Get-PrimaryDiskSizeGB {
-    # Disks report raw bytes a bit under their marketed decimal-GB capacity
-    # (e.g. a "256GB" SSD reports ~256,060,514,304 bytes), so divide by
-    # 1000^3, not 1024^3, to land on the label the box was sold with.
+    # Decimal GB (1000^3), the unit the disk is sold in.
     try {
         $disk = Get-Partition -DriveLetter C -ErrorAction Stop | Get-Disk -ErrorAction Stop
         return [math]::Round($disk.Size / 1000000000, 0)
@@ -245,94 +226,105 @@ function Get-PrimaryDiskSizeGB {
         try {
             $drive = Get-CimInstance Win32_DiskDrive -ErrorAction Stop | Select-Object -First 1
             return [math]::Round($drive.Size / 1000000000, 0)
-        } catch {
-            return $null
-        }
+        } catch { return $null }
     }
-}
-
-function Get-DiskSpecStatus {
-    param($DiskGB)
-
-    if ($null -eq $DiskGB) { return "Unknown - verify manually" }
-
-    # Snap the raw reading to the nearest standard drive size so e.g. 238GB
-    # raw (a genuine 256GB SSD) doesn't read as "below spec".
-    $standardSizesGB = 64, 120, 128, 240, 250, 256, 480, 500, 512, 960, 1000, 1024, 2000, 2048
-    $closest = $standardSizesGB | Sort-Object { [math]::Abs($_ - $DiskGB) } | Select-Object -First 1
-
-    if ($closest -lt 256) { return "Below spec (~${closest}GB disk, raw ${DiskGB}GB)" }
-    elseif ($closest -eq 256) { return "Meets spec (256GB)" }
-    else { return "Above spec (~${closest}GB disk, raw ${DiskGB}GB)" }
 }
 
 function Get-PrimaryDiskMediaType {
-    try {
-        $physicalDisk = Get-Partition -DriveLetter C -ErrorAction Stop |
-            Get-Disk -ErrorAction Stop |
-            Get-PhysicalDisk -ErrorAction Stop |
-            Select-Object -First 1
-        if ($physicalDisk -and $physicalDisk.MediaType -and $physicalDisk.MediaType -ne 'Unspecified') {
-            return [string]$physicalDisk.MediaType
-        }
-    } catch {}
-    try {
-        $physicalDisk = Get-PhysicalDisk -ErrorAction Stop | Select-Object -First 1
-        if ($physicalDisk -and $physicalDisk.MediaType -and $physicalDisk.MediaType -ne 'Unspecified') {
-            return [string]$physicalDisk.MediaType
-        }
-    } catch {}
+    foreach ($get in { Get-Partition -DriveLetter C -ErrorAction Stop | Get-Disk -ErrorAction Stop | Get-PhysicalDisk -ErrorAction Stop },
+                     { Get-PhysicalDisk -ErrorAction Stop }) {
+        try {
+            $d = & $get | Select-Object -First 1
+            if ($d -and $d.MediaType -and "$($d.MediaType)" -ne 'Unspecified') { return [string]$d.MediaType }
+        } catch {}
+    }
     return $null
 }
 
-function Get-DiskTypeStatus {
-    param([string]$MediaType)
-
-    if (-not $MediaType) { return "Unknown - verify manually" }
-    if ($MediaType -eq 'SSD') { return 'Meets spec (SSD)' }
-    return "Below spec ($MediaType, not SSD)"
-}
-
-function Write-SpecLine {
-    param([string]$Label, [string]$Status, [string]$Detail = $Status)
-
-    $color = switch -Wildcard ($Status) {
-        'Meets spec*' { 'Green' }
-        'Below spec*' { 'Red' }
-        'Above spec*' { 'Yellow' }
-        default       { 'DarkYellow' }
+function Get-PanelInfo {
+    # Native resolution and size of the built-in screen, from the panel's own
+    # EDID data (the Windows desktop resolution can be set lower).
+    $r = @{ Width = $null; Height = $null; Inches = $null }
+    try {
+        $internalTech = [uint32]0x80000000, 6, 11, 13   # internal, LVDS, embedded DisplayPort, embedded UDI
+        $conn = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorConnectionParams -ErrorAction Stop)
+        $names = @($conn | Where-Object { $internalTech -contains [uint32]$_.VideoOutputTechnology } | ForEach-Object InstanceName)
+        if (-not $names) { $names = @($conn | ForEach-Object InstanceName) }
+        $modes = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorListedSupportedSourceModes -ErrorAction Stop |
+            Where-Object { $names -contains $_.InstanceName } | ForEach-Object { $_.MonitorSourceModes })
+        $best = $modes | Sort-Object { [int]$_.HorizontalActivePixels * [int]$_.VerticalActivePixels } -Descending | Select-Object -First 1
+        if ($best) { $r.Width = [int]$best.HorizontalActivePixels; $r.Height = [int]$best.VerticalActivePixels }
+        $p = Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams -ErrorAction Stop |
+            Where-Object { $names -contains $_.InstanceName } | Select-Object -First 1
+        if ($p -and $p.MaxHorizontalImageSize -gt 0) {
+            $r.Inches = [math]::Round([math]::Sqrt([math]::Pow($p.MaxHorizontalImageSize, 2) + [math]::Pow($p.MaxVerticalImageSize, 2)) / 2.54, 1)
+        }
+    } catch { Write-DetailLog "Panel info failed: $($_.Exception.Message)" }
+    if (-not $r.Width) {
+        try {
+            $vc = Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object CurrentHorizontalResolution |
+                Sort-Object CurrentHorizontalResolution -Descending | Select-Object -First 1
+            if ($vc) { $r.Width = [int]$vc.CurrentHorizontalResolution; $r.Height = [int]$vc.CurrentVerticalResolution }
+        } catch {}
     }
-    Write-Host ("  {0,-12}: {1}" -f $Label, $Detail) -ForegroundColor $color
+    $r
 }
 
-function Write-BoolLine {
-    param([string]$Label, [bool]$Pass, [string]$Detail)
-
-    $color = if ($Pass) { 'Green' } else { 'Red' }
-    Write-Host ("  {0,-12}: {1}" -f $Label, $Detail) -ForegroundColor $color
+function Get-BatteryDesignWh {
+    try {
+        $b = @(Get-CimInstance -Namespace root\wmi -ClassName BatteryStaticData -ErrorAction Stop | Where-Object DesignedCapacity)
+        if ($b) { return [math]::Round(($b | Measure-Object DesignedCapacity -Sum).Sum / 1000, 1) }
+    } catch { Write-DetailLog "Battery info failed: $($_.Exception.Message)" }
+    return $null
 }
 
-# --- Gather hardware/OS info ---
+function Get-TpmVersion {
+    try {
+        $t = Get-CimInstance -Namespace root\cimv2\security\microsofttpm -ClassName Win32_Tpm -ErrorAction Stop | Select-Object -First 1
+        if ($t -and $t.SpecVersion) { return ("$($t.SpecVersion)" -split ',')[0].Trim() }
+    } catch { Write-DetailLog "TPM info failed: $($_.Exception.Message)" }
+    return $null
+}
+
+# --- Gather hardware/OS facts ---
 $bios = Get-CimInstance Win32_BIOS
 $cs   = Get-CimInstance Win32_ComputerSystem
 $os   = Get-CimInstance Win32_OperatingSystem
 $cpu  = Get-CimInstance Win32_Processor | Select-Object -First 1
+$pnp  = @(try { Get-CimInstance Win32_PnPEntity -ErrorAction Stop } catch { })
+$panel = Get-PanelInfo
 
-$serialNumber = $bios.SerialNumber.Trim()
+$serialNumber = "$($bios.SerialNumber)".Trim()
 $hostname     = $env:COMPUTERNAME
-$cpuModel     = $cpu.Name.Trim()
-$ramGB        = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
-$osCaption    = $os.Caption
-$osBuild      = $os.BuildNumber
-$isWindows    = $osCaption -match 'Windows'
+$wifiName     = $network.wifiAdapter
+if (-not $wifiName -and $SkipNetwork) { $wifiName = (Get-WifiAdapter).InterfaceDescription }
 
-Write-Host "`nInspecting $hostname (serial: $serialNumber) as $Inspector..." -ForegroundColor Cyan
-Write-BoolLine "OS" $isWindows $osCaption
+$facts = @{
+    Manufacturer    = "$($cs.Manufacturer)".Trim()
+    Model           = "$($cs.Model)".Trim()
+    CpuName         = "$($cpu.Name)".Trim()
+    RamGB           = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
+    DiskGB          = Get-PrimaryDiskSizeGB
+    DiskMediaType   = Get-PrimaryDiskMediaType
+    GpuNames        = @(@(try { Get-CimInstance Win32_VideoController -ErrorAction Stop | ForEach-Object Name } catch { }) +
+                        @($pnp | Where-Object { $_.PNPClass -eq 'Display' } | ForEach-Object Name) | Where-Object { $_ } | Select-Object -Unique)
+    PanelWidth      = $panel.Width
+    PanelHeight     = $panel.Height
+    PanelInches     = $panel.Inches
+    HasTouch        = [bool]($pnp | Where-Object { $_.Name -match 'touch ?screen' })
+    WifiAdapter     = $wifiName
+    HasBluetooth    = [bool]($pnp | Where-Object { $_.PNPClass -eq 'Bluetooth' })
+    HasCamera       = [bool]($pnp | Where-Object { $_.PNPClass -in 'Camera', 'Image' -or $_.Name -match 'camera|webcam' })
+    FingerprintName = ($pnp | Where-Object { $_.PNPClass -eq 'Biometric' -or $_.Name -match 'fingerprint|FP Sensor' } | Select-Object -First 1).Name
+    TpmVersion      = Get-TpmVersion
+    BatteryWh       = Get-BatteryDesignWh
+    OsCaption       = $os.Caption
+    Activation      = $null
+}
 
 # Best-effort "new / unused" check: disk power-on hours (when the storage
-# driver exposes reliability counters) plus OS install date as a fallback
-# signal. This cannot prove a machine is factory-new - flag for manual
-# confirmation when the signal is unavailable.
+# driver exposes reliability counters), else the OS install date. It cannot
+# prove a laptop is factory-new, so an unreadable signal asks for a look.
 $installDate = $os.InstallDate
 $daysSinceInstall = if ($installDate) { (New-TimeSpan -Start $installDate -End (Get-Date)).Days } else { $null }
 
@@ -342,6 +334,7 @@ if ($slowProbes) {
     Remove-Job $slowProbes -Force -ErrorAction SilentlyContinue
 }
 $powerOnHours = if ($probe) { $probe.powerOnHours } else { $null }
+$facts.Activation = if ($probe) { $probe.activation } else { $null }
 
 if ($null -ne $powerOnHours) {
     $condition = if ($powerOnHours -le 24) { "Likely new (disk power-on hours: $powerOnHours)" }
@@ -351,86 +344,80 @@ if ($null -ne $powerOnHours) {
 } else {
     $condition = "Unverified - manual check needed"
 }
-$conditionColor = if ($condition -like 'Likely new*') { 'Green' } elseif ($condition -like 'Likely used*') { 'Gray' } else { 'DarkYellow' }
-Write-Host ("  {0,-12}: {1}" -f "Condition", $condition) -ForegroundColor $conditionColor
+Write-DetailLog ("Facts: " + ($facts | ConvertTo-Json -Compress))
 
-$activationStatus = if ($probe -and $probe.activation) { $probe.activation } else { 'Unknown - verify manually (run slmgr /xpr)' }
-$isActivated    = $activationStatus -eq 'Licensed'
-Write-BoolLine "Activation" $isActivated $activationStatus
+$eval = Get-Lot2Evaluation -Facts $facts -Category $Category
 
-$cpuSpecStatus  = Get-CpuSpecStatus -CpuName $cpuModel
-Write-SpecLine "CPU" $cpuSpecStatus "$cpuModel -> $cpuSpecStatus"
-
-$ramSpecStatus  = Get-RamSpecStatus -RamGB $ramGB
-Write-SpecLine "RAM" $ramSpecStatus "${ramGB}GB -> $ramSpecStatus"
-
-$diskGB         = Get-PrimaryDiskSizeGB
-$diskSpecStatus = Get-DiskSpecStatus -DiskGB $diskGB
-Write-SpecLine "Disk size" $diskSpecStatus
-
-$diskMediaType  = Get-PrimaryDiskMediaType
-$diskTypeStatus = Get-DiskTypeStatus -MediaType $diskMediaType
-Write-SpecLine "Disk type" $diskTypeStatus "$diskMediaType -> $diskTypeStatus"
-
-# "Above spec" (e.g. a 512GB disk when 256GB is the minimum) is a pass, not
-# a failure - only "Below spec" (and unreadable/"Unknown") statuses count
-# against a PC. Everything else exceeds or meets the requirement.
-function Test-SpecOk {
-    param([string]$Status)
-    return ($Status -like 'Meets spec*') -or ($Status -like 'Above spec*')
+Write-Host "`nInspecting $hostname (serial: $serialNumber) as $Inspector..." -ForegroundColor Cyan
+if ($eval.Model) {
+    $alt = if ($eval.Model.Alternative) { ' - approved alternative' } else { '' }
+    Write-Host ("  Category {0}: {1}{2}  [{3}]" -f $eval.Category, $eval.Model.Name, $alt, $eval.Source) -ForegroundColor Cyan
 }
+$checkLabels = [ordered]@{
+    model = 'Model'; cpu = 'CPU'; ram = 'RAM'; storage = 'Storage'; gpu = 'Graphics'; display = 'Screen'
+    touch = 'Touch'; fingerprint = 'Fingerprint'; battery = 'Battery'; wifi6e = 'Wi-Fi 6E'
+    bluetooth = 'Bluetooth'; camera = 'Camera'; tpm = 'TPM'; os = 'Windows'; activation = 'Activation'
+}
+foreach ($c in $eval.Checks) {
+    $color = @{ Meets = 'Green'; Above = 'Green'; Below = 'Red'; Unknown = $(if ($c.Core) { 'Red' } else { 'DarkYellow' }) }[$c.Status]
+    Write-Host ("  {0,-12}: {1}" -f $checkLabels[$c.Key], $c.Text) -ForegroundColor $color
+}
+$conditionColor = if ($condition -like 'Likely new*') { 'Green' } elseif ($condition -like 'Likely used*') { 'Gray' } else { 'DarkYellow' }
+Write-Host ("  {0,-12}: {1}" -f 'Condition', $condition) -ForegroundColor $conditionColor
 
-# A PC must have a working Wi-Fi card + network drivers unless config.json
-# sets "RequireWifi": false.
-$requireWifi = $config.RequireWifi -ne $false
-$networkOk = $SkipNetwork -or (-not $requireWifi) -or [bool]$network.wifiAdapter
-
-$overallPass = $isWindows -and $isActivated -and $networkOk -and
-    (Test-SpecOk $cpuSpecStatus) -and
-    (Test-SpecOk $ramSpecStatus) -and
-    (Test-SpecOk $diskSpecStatus) -and
-    (Test-SpecOk $diskTypeStatus)
+$overallPass   = $eval.Pass
 $overallResult = if ($overallPass) { 'PASS' } else { 'FAIL' }
 
-$notes = @()
-if (-not $isWindows) { $notes += "OS is not Windows ($osCaption)" }
-if (-not $isActivated) { $notes += "Windows not activated ($activationStatus)" }
-if (-not $networkOk) { $notes += "Wi-Fi: $($network.networkDriverStatus)" }
-if (-not (Test-SpecOk $cpuSpecStatus)) { $notes += $cpuSpecStatus }
-if (-not (Test-SpecOk $ramSpecStatus)) { $notes += $ramSpecStatus }
-if (-not (Test-SpecOk $diskSpecStatus)) { $notes += $diskSpecStatus }
-if (-not (Test-SpecOk $diskTypeStatus)) { $notes += $diskTypeStatus }
+$notes = @($eval.Failed | ForEach-Object { "$($checkLabels[$_.Key]): $($_.Text)" })
+if ($eval.ByHand) { $notes += 'Check by hand: ' + (($eval.ByHand | ForEach-Object { $checkLabels[$_.Key] }) -join ', ') }
 if ($condition -like 'Unverified*') { $notes += 'Condition needs manual confirmation' }
 $notesText = ($notes -join '; ')
 
 Write-Took 'checks' $hwTimer
 $overallColor = if ($overallPass) { 'Green' } else { 'Red' }
 
+function Get-CheckText([string]$Key) { ($eval.Checks | Where-Object Key -eq $Key | Select-Object -First 1).Text }
+
 $record = [ordered]@{
     timestamp         = [DateTime]::UtcNow.AddHours($(if ($null -ne $config.TimeZoneOffsetHours) { [double]$config.TimeZoneOffsetHours } else { 2 })).ToString('yyyy-MM-dd HH:mm:ss')
     inspector         = $Inspector
     serialNumber      = $serialNumber
     hostname          = $hostname
-    os                = $osCaption
-    osBuild           = $osBuild
-    activationStatus  = $activationStatus
-    cpuModel          = $cpuModel
-    cpuSpecStatus     = $cpuSpecStatus
-    ramGB             = $ramGB
-    ramSpecStatus     = $ramSpecStatus
-    diskGB            = $diskGB
-    diskSpecStatus    = $diskSpecStatus
-    diskMediaType     = $diskMediaType
-    diskTypeStatus    = $diskTypeStatus
-    condition         = $condition
-    diskPowerOnHours  = $powerOnHours
+    manufacturer      = $facts.Manufacturer
+    model             = $facts.Model
+    category          = $eval.Category
+    categorySource    = $eval.Source
+    contractModel     = if ($eval.Model) { $eval.Model.Name + $(if ($eval.Model.Alternative) { ' (alternative)' } else { '' }) } else { '' }
     overallResult     = $overallResult
     notes             = $notesText
+    modelCheck        = Get-CheckText model
+    cpuModel          = $facts.CpuName
+    cpuCheck          = Get-CheckText cpu
+    ramGB             = $facts.RamGB
+    ramCheck          = Get-CheckText ram
+    diskGB            = $facts.DiskGB
+    storageCheck      = Get-CheckText storage
+    gpuCheck          = Get-CheckText gpu
+    displayCheck      = Get-CheckText display
+    touchCheck        = Get-CheckText touch
+    fingerprintCheck  = Get-CheckText fingerprint
+    batteryCheck      = Get-CheckText battery
+    wifi6eCheck       = Get-CheckText wifi6e
+    bluetoothCheck    = Get-CheckText bluetooth
+    cameraCheck       = Get-CheckText camera
+    tpmCheck          = Get-CheckText tpm
+    os                = $facts.OsCaption
+    osBuild           = $os.BuildNumber
+    osCheck           = Get-CheckText os
+    activationCheck   = Get-CheckText activation
+    condition         = $condition
+    diskPowerOnHours  = $powerOnHours
     wifiAdapter       = $network.wifiAdapter
     wifiDriverVersion = $network.wifiDriverVersion
     networkDriverStatus = $network.networkDriverStatus
     wifiConnected     = $network.wifiConnected
     internetOk        = [bool]$network.internetOk
+    toolVersion       = $ToolVersion
 }
 
 $script:UsageCtx.serialNumber = $serialNumber

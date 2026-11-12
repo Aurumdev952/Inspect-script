@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
   Inspects the local Windows PC's hardware/OS against the target spec
-  (Intel Core i5, 14th generation; 8GB RAM; 256GB SSD; Windows, activated),
+  (Intel Core i5-14500; 8GB RAM; 256GB SSD; Windows, activated - activating
+  it with the MAK key from config.json when it is not),
   makes sure the network (Wi-Fi) drivers work and Wi-Fi is configured,
   and uploads one record to a shared Google Sheet via an Apps Script webhook.
 
@@ -41,6 +42,8 @@ if (-not $LogPath)            { $LogPath            = Join-Path $FlashRoot 'insp
 if (-not $DriversDir)         { $DriversDir         = Join-Path $FlashRoot 'drivers' }
 
 . (Join-Path $PSScriptRoot 'Setup-Network.ps1')
+. (Join-Path $PSScriptRoot 'Spec-Rules.ps1')
+. (Join-Path $PSScriptRoot 'Windows-Activation.ps1')
 
 $ProgressPreference = 'SilentlyContinue'   # progress bars make web calls and zips much slower
 $runTimer = [Diagnostics.Stopwatch]::StartNew()
@@ -108,23 +111,25 @@ if (Test-Path $ConfigPath) {
 } else {
     Write-Host "No config.json found at $ConfigPath - Wi-Fi setup and upload will be skipped." -ForegroundColor Yellow
 }
+# The Windows key stays on the flash disk only: drop it from the copy of
+# config.json the launcher left on this PC (it is still in memory for this run).
+if ($UsbRoot -and $config.WindowsProductKey) {
+    try {
+        $localCopy = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+        $localCopy.PSObject.Properties.Remove('WindowsProductKey')
+        $localCopy | ConvertTo-Json -Depth 6 | Set-Content -Path $ConfigPath -Encoding UTF8
+    } catch { Write-DetailLog "Could not remove the Windows key from ${ConfigPath}: $($_.Exception.Message)" }
+}
 if (-not $WebhookUrl) { $WebhookUrl = $config.WebhookUrl }
 if ($null -ne $config.TimeZoneOffsetHours) { $script:TzOffsetHours = [double]$config.TimeZoneOffsetHours }
 Write-DetailLog ("Config: webhook " + $(if ($WebhookUrl) { 'set' } else { 'MISSING' }) + ", inspectors " + @($config.Inspectors).Count + ", wifi networks " + @($config.WifiNetworks).Count + ", requireWifi " + ($config.RequireWifi -ne $false))
 
 # Two slow Windows queries (Windows activation, disk power-on hours) run in
 # the background while the inspector picks a name and the network is set up.
-$slowProbes = Start-Job -ScriptBlock {
-    $r = @{ activation = $null; powerOnHours = $null }
-    try {
-        $product = Get-CimInstance SoftwareLicensingProduct -ErrorAction Stop `
-            -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL" |
-            Select-Object -First 1
-        if ($product) {
-            $statusMap = @{ 0 = 'Unlicensed'; 1 = 'Licensed'; 2 = 'OOB Grace'; 3 = 'OOT Grace'; 4 = 'Non-Genuine Grace'; 5 = 'Notification'; 6 = 'Extended Grace' }
-            $r.activation = $statusMap[[int]$product.LicenseStatus]
-        }
-    } catch {}
+$slowProbes = Start-Job -ArgumentList (Join-Path $PSScriptRoot 'Windows-Activation.ps1') -ScriptBlock {
+    param($activationScript)
+    . $activationScript
+    $r = @{ activation = (Get-WindowsActivationStatus); powerOnHours = $null }
     try {
         $counters = Get-PhysicalDisk -ErrorAction Stop | Get-StorageReliabilityCounter -ErrorAction Stop
         if ($counters) {
@@ -194,46 +199,6 @@ Write-Took 'network' $netTimer
 Write-Host "`n[2/3] Hardware & Windows checks" -ForegroundColor Cyan
 $hwTimer = [Diagnostics.Stopwatch]::StartNew()
 
-function Get-CpuSpecStatus {
-    param([string]$CpuName)
-
-    # Target: Intel Core i5, 14th generation (e.g. i5-14400, i5-1440P, "14th Gen Intel(R) Core(TM) i5-...")
-    $is14thGenI5 = ($CpuName -match 'i5-14\d{2}') -or ($CpuName -match '14th Gen.*i5')
-    if ($is14thGenI5) { return 'Meets spec (i5, 14th gen)' }
-
-    $genMatch = [regex]::Match($CpuName, 'i([3579])-(\d{1,2})\d{3}')
-    if ($genMatch.Success) {
-        $tier = [int]$genMatch.Groups[1].Value
-        $gen  = [int]$genMatch.Groups[2].Value
-
-        if ($tier -eq 5) {
-            if ($gen -lt 14) { return "Below spec (i5, ${gen}th gen)" }
-            else { return "Above spec (i5, ${gen}th gen)" }
-        } elseif ($tier -lt 5) {
-            return "Below spec (i$tier, ${gen}th gen)"
-        } else {
-            return "Above spec (i$tier, ${gen}th gen)"
-        }
-    }
-
-    return "Unknown - verify manually ($CpuName)"
-}
-
-function Get-RamSpecStatus {
-    param([double]$RamGB)
-
-    # Windows reports a bit less than a stick's labeled size (some is
-    # reserved for the BIOS/integrated graphics), so an "8GB" machine often
-    # reads as ~7.7GB. Snap to the nearest standard RAM size instead of
-    # comparing the raw reading exactly, same approach as the disk check.
-    $standardSizesGB = 2, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128
-    $closest = $standardSizesGB | Sort-Object { [math]::Abs($_ - $RamGB) } | Select-Object -First 1
-
-    if ($closest -lt 8) { return "Below spec (~${closest}GB RAM, raw ${RamGB}GB)" }
-    elseif ($closest -eq 8) { return "Meets spec (8GB)" }
-    else { return "Above spec (~${closest}GB RAM, raw ${RamGB}GB)" }
-}
-
 function Get-PrimaryDiskSizeGB {
     # Disks report raw bytes a bit under their marketed decimal-GB capacity
     # (e.g. a "256GB" SSD reports ~256,060,514,304 bytes), so divide by
@@ -249,21 +214,6 @@ function Get-PrimaryDiskSizeGB {
             return $null
         }
     }
-}
-
-function Get-DiskSpecStatus {
-    param($DiskGB)
-
-    if ($null -eq $DiskGB) { return "Unknown - verify manually" }
-
-    # Snap the raw reading to the nearest standard drive size so e.g. 238GB
-    # raw (a genuine 256GB SSD) doesn't read as "below spec".
-    $standardSizesGB = 64, 120, 128, 240, 250, 256, 480, 500, 512, 960, 1000, 1024, 2000, 2048
-    $closest = $standardSizesGB | Sort-Object { [math]::Abs($_ - $DiskGB) } | Select-Object -First 1
-
-    if ($closest -lt 256) { return "Below spec (~${closest}GB disk, raw ${DiskGB}GB)" }
-    elseif ($closest -eq 256) { return "Meets spec (256GB)" }
-    else { return "Above spec (~${closest}GB disk, raw ${DiskGB}GB)" }
 }
 
 function Get-PrimaryDiskMediaType {
@@ -283,14 +233,6 @@ function Get-PrimaryDiskMediaType {
         }
     } catch {}
     return $null
-}
-
-function Get-DiskTypeStatus {
-    param([string]$MediaType)
-
-    if (-not $MediaType) { return "Unknown - verify manually" }
-    if ($MediaType -eq 'SSD') { return 'Meets spec (SSD)' }
-    return "Below spec ($MediaType, not SSD)"
 }
 
 function Write-SpecLine {
@@ -354,9 +296,12 @@ if ($null -ne $powerOnHours) {
 $conditionColor = if ($condition -like 'Likely new*') { 'Green' } elseif ($condition -like 'Likely used*') { 'Gray' } else { 'DarkYellow' }
 Write-Host ("  {0,-12}: {1}" -f "Condition", $condition) -ForegroundColor $conditionColor
 
-$activationStatus = if ($probe -and $probe.activation) { $probe.activation } else { 'Unknown - verify manually (run slmgr /xpr)' }
-$isActivated    = $activationStatus -eq 'Licensed'
-Write-BoolLine "Activation" $isActivated $activationStatus
+$activationStatus = if ($probe -and $probe.activation) { $probe.activation } else { Get-WindowsActivationStatus }
+$activation       = Invoke-WindowsActivation -CurrentStatus $activationStatus -ProductKey $config.WindowsProductKey
+$activationStatus = $activation.status
+$activationAction = $activation.action
+$isActivated      = $activationStatus -eq 'Licensed'
+Write-BoolLine "Activation" $isActivated "$activationStatus ($activationAction)"
 
 $cpuSpecStatus  = Get-CpuSpecStatus -CpuName $cpuModel
 Write-SpecLine "CPU" $cpuSpecStatus "$cpuModel -> $cpuSpecStatus"
@@ -372,14 +317,6 @@ $diskMediaType  = Get-PrimaryDiskMediaType
 $diskTypeStatus = Get-DiskTypeStatus -MediaType $diskMediaType
 Write-SpecLine "Disk type" $diskTypeStatus "$diskMediaType -> $diskTypeStatus"
 
-# "Above spec" (e.g. a 512GB disk when 256GB is the minimum) is a pass, not
-# a failure - only "Below spec" (and unreadable/"Unknown") statuses count
-# against a PC. Everything else exceeds or meets the requirement.
-function Test-SpecOk {
-    param([string]$Status)
-    return ($Status -like 'Meets spec*') -or ($Status -like 'Above spec*')
-}
-
 # A PC must have a working Wi-Fi card + network drivers unless config.json
 # sets "RequireWifi": false.
 $requireWifi = $config.RequireWifi -ne $false
@@ -394,7 +331,7 @@ $overallResult = if ($overallPass) { 'PASS' } else { 'FAIL' }
 
 $notes = @()
 if (-not $isWindows) { $notes += "OS is not Windows ($osCaption)" }
-if (-not $isActivated) { $notes += "Windows not activated ($activationStatus)" }
+if (-not $isActivated) { $notes += "Windows not activated ($activationStatus; $activationAction)" }
 if (-not $networkOk) { $notes += "Wi-Fi: $($network.networkDriverStatus)" }
 if (-not (Test-SpecOk $cpuSpecStatus)) { $notes += $cpuSpecStatus }
 if (-not (Test-SpecOk $ramSpecStatus)) { $notes += $ramSpecStatus }
@@ -431,6 +368,7 @@ $record = [ordered]@{
     networkDriverStatus = $network.networkDriverStatus
     wifiConnected     = $network.wifiConnected
     internetOk        = [bool]$network.internetOk
+    activationAction  = $activationAction
 }
 
 $script:UsageCtx.serialNumber = $serialNumber

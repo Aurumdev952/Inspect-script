@@ -92,6 +92,11 @@ jobs:
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-NetworkRules.ps1 -Scripts "$PWD\scripts"
           if ($LASTEXITCODE -ne 0) { throw "Network rules test failed" }
+      - name: Spec and activation rules (only i5-14500 passes; key never logged)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-SpecAndActivation.ps1 -Scripts "$PWD\scripts"
+          if ($LASTEXITCODE -ne 0) { throw "Spec and activation test failed" }
       - name: Windows Defender scan of the exe
         continue-on-error: true
         shell: powershell

@@ -9,6 +9,8 @@
 
   "RequireWifi": true,
 
+  "WindowsProductKey": "",
+
   "TimeZoneOffsetHours": 2,
 
   "DriverPackages": [

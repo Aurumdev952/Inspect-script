@@ -11,9 +11,13 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
 3. **Network:** if the Wi-Fi card has no working driver, installs drivers from
    `drivers\` on the flash disk, or downloads them from the links in
    `config.json`. Then adds your Wi-Fi networks and connects.
-4. **Specs:** checks CPU (i5 14th gen), RAM (8GB), disk (256GB SSD), Windows
-   activation, condition (disk power-on hours).
-5. Shows **PASS / FAIL**, saves a row to `inspection-log.csv` on the flash
+4. **Specs:** checks CPU (**i5-14500 only** - an i5-14400, i5-14500T or any
+   other CPU fails), RAM (8GB), disk (256GB SSD), condition (disk power-on hours).
+5. **Windows activation:** if Windows is not activated and `config.json` has a
+   `WindowsProductKey` (MAK), installs it (`slmgr /ipk`) and activates online
+   (`slmgr /ato`). The Sheet's **Activation Action** column says what happened:
+   `Already activated`, `Activated now`, or `Activation failed (<error code>)`.
+6. Shows **PASS / FAIL**, saves a row to `inspection-log.csv` on the flash
    disk, and uploads it to the Google Sheet.
 
 ## Set up a flash disk
@@ -38,6 +42,7 @@ Double-click `PC-Inspection.exe` on a flash disk and it:
 | `WifiNetworks` | List of `{ "Ssid", "Password", "Security" }`. Security: `WPA2PSK` (default), `WPA3SAE`, `WPAPSK`, `OPEN`. Add `"Hidden": true` for hidden networks. Tried in order. |
 | `DriverPackages` | Network driver links: `Name`, `Url`, `Type` (`zip`, `exe`, `msi`, `inf`, `cab`), optional `SilentArgs` (for `exe`), optional `MatchHardwareIds` (e.g. `VEN_8086` Intel, `VEN_10EC` Realtek, `VEN_14C3` MediaTek, `VEN_17CB` Qualcomm) |
 | `RequireWifi` | `true` = PC fails if it has no working Wi-Fi card/driver |
+| `WindowsProductKey` | The MAK key used to activate Windows when it is not activated. Empty = only check. Removed from the copy left on each PC; never logged or uploaded. |
 | `TimeZoneOffsetHours` | Hours added to UTC for the time saved in the Sheet. `2` = Rwanda (the PCs' own time zone is often wrong) |
 
 3. The Wi-Fi drivers (Intel + Realtek, from the team's WifiDrivers pack)
@@ -59,7 +64,9 @@ One-time setup, done by the Sheet owner:
 
 1. Open the Google Sheet → **Extensions → Apps Script**.
 2. Paste all of `AppsScript/Code.gs` (replace what is there).
-3. `Code.gs` writes only to the `Inspections` tab (`SHEET_GID = 418189154`).
+3. `Code.gs` writes only to the `i5-14500` tab (`SHEET_GID = 265579920`).
+   For a standalone script (not opened from the Sheet's Extensions menu),
+   set `SPREADSHEET_ID` to the Sheet's ID (the long part of its URL).
    For another Sheet set `SHEET_GID` to the number after `gid=` in its URL.
 4. **Deploy → New deployment → Web app**, Execute as **Me**, Who has access
    **Anyone**. Copy the URL.

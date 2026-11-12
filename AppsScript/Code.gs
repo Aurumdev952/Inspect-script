@@ -6,18 +6,23 @@
  *   - the download URL for the script itself (see doGet below).
  */
 
+// The Sheet to write to. Leave empty when this script is bound to the Sheet
+// (Extensions > Apps Script); set it for a standalone script.
+var SPREADSHEET_ID = '';
+
 var SHEET_NAME = 'Inspections';
 
 // Optional: write to a specific tab instead of SHEET_NAME. Use the number
 // after "gid=" in the Sheet's URL (e.g. ...edit#gid=418189154 -> 418189154).
-var SHEET_GID = 418189154;
+var SHEET_GID = 265579920;
 
 var COLUMNS = [
   'timestamp', 'inspector', 'serialNumber', 'hostname', 'os', 'osBuild',
   'activationStatus', 'cpuModel', 'cpuSpecStatus', 'ramGB', 'ramSpecStatus',
   'diskGB', 'diskSpecStatus', 'diskMediaType', 'diskTypeStatus',
   'condition', 'diskPowerOnHours', 'overallResult', 'notes',
-  'wifiAdapter', 'wifiDriverVersion', 'networkDriverStatus', 'wifiConnected', 'internetOk'
+  'wifiAdapter', 'wifiDriverVersion', 'networkDriverStatus', 'wifiConnected', 'internetOk',
+  'activationAction'
 ];
 
 // Filled in by this script, not sent by the PC: 1 for the first inspection of
@@ -30,7 +35,7 @@ var HEADER_ROW = [
   'Disk (GB)', 'Disk Spec Status', 'Disk Media Type', 'Disk Type Status',
   'Condition (New?)', 'Disk Power-On Hours', 'Overall Result', 'Notes',
   'Wi-Fi Adapter', 'Wi-Fi Driver Version', 'Network Driver Status', 'Wi-Fi Connected', 'Internet OK',
-  NUMBER_HEADER
+  'Activation Action', NUMBER_HEADER
 ];
 
 function doPost(e) {
@@ -81,8 +86,12 @@ function handlePost_(e) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+function spreadsheet_() {
+  return SPREADSHEET_ID ? SpreadsheetApp.openById(SPREADSHEET_ID) : SpreadsheetApp.getActiveSpreadsheet();
+}
+
 function getTargetSheet_() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = spreadsheet_();
   if (SHEET_GID !== null) {
     var tabs = ss.getSheets();
     for (var i = 0; i < tabs.length; i++) {
@@ -104,7 +113,7 @@ function findInspections_(sheet, serialNumber, timestamp) {
   var serialIdx = COLUMNS.indexOf('serialNumber');
   var tsIdx = COLUMNS.indexOf('timestamp');
   var inspectorIdx = COLUMNS.indexOf('inspector');
-  var tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  var tz = spreadsheet_().getSpreadsheetTimeZone();
   var values = sheet.getRange(2, 1, lastRow - 1, COLUMNS.length).getValues();
 
   // Sheets turns "2026-10-23 11:23:47" into a date; turn it back into text

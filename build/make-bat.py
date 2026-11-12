@@ -70,9 +70,9 @@ exit /b 0
 """.replace("%VERSION%", version)
 
 parts = [header]
-for name in ("Inspect-PC.ps1", "Setup-Network.ps1", "Prepare-Local.ps1"):
-    body = (root / "scripts" / name).read_text(encoding="utf-8-sig")
-    parts.append(f"#==FILE:{name}==\n{body}\n")
+for path in sorted((root / "scripts").glob("*.ps1")):
+    body = path.read_text(encoding="utf-8-sig")
+    parts.append(f"#==FILE:{path.name}==\n{body}\n")
 
 text = "".join(parts).replace("\r\n", "\n").replace("\n", "\r\n")
 pathlib.Path(out).write_bytes(text.encode("utf-8"))
